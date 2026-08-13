@@ -63,10 +63,12 @@ final class LocationTelemetryManager: NSObject, ObservableObject {
         case .notDetermined:
             // Shows While Using / Always / Don’t Allow (iOS).
             manager.requestAlwaysAuthorization()
+#if os(iOS)
         case .authorizedWhenInUse:
             // Upgrade prompt to Always.
             manager.requestAlwaysAuthorization()
             locationError = "Choose “Always Allow” for location so JVPN can pick the best server while connected."
+#endif
         case .authorizedAlways:
             configureBackgroundUpdates(true)
             manager.startUpdatingLocation()
@@ -214,9 +216,11 @@ extension LocationTelemetryManager: CLLocationManagerDelegate {
                 self.configureBackgroundUpdates(true)
                 self.manager.startUpdatingLocation()
                 self.publishTelemetry(force: true)
+#if os(iOS)
             case .authorizedWhenInUse:
                 self.locationError = "Choose “Always Allow” for location so JVPN can pick the best server while connected."
                 self.configureBackgroundUpdates(false)
+#endif
             case .denied, .restricted:
                 self.configureBackgroundUpdates(false)
                 self.locationError = "Location must be set to Always for JVPN. Enable it in Settings."
