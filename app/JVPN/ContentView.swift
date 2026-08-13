@@ -53,19 +53,10 @@ struct ContentView: View {
             if location.isAuthorized {
                 location.startMonitoring()
             }
+            updateProtectionAnimations(isProtected)
         }
         .onChange(of: isProtected) { _, protected in
-            if protected {
-                withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
-                    pulseScale = 1.08
-                }
-                withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
-                    ringRotation = 360
-                }
-            } else {
-                pulseScale = 1.0
-                ringRotation = 0
-            }
+            updateProtectionAnimations(protected)
         }
     }
 
@@ -406,6 +397,20 @@ struct ContentView: View {
                 JVPNDebugLog.app("toggleVPN connect error: \(error.localizedDescription)")
                 message = error.localizedDescription
             }
+        }
+    }
+
+    private func updateProtectionAnimations(_ protected: Bool) {
+        if protected {
+            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+                pulseScale = 1.08
+            }
+            withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
+                ringRotation = 360
+            }
+        } else {
+            pulseScale = 1.0
+            ringRotation = 0
         }
     }
 
