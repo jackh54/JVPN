@@ -24,20 +24,16 @@ type wsConn struct {
 }
 
 func newWSConn(c *websocket.Conn) *wsConn {
-	const (
-		pongWait   = 75 * time.Second
-		pingPeriod = 25 * time.Second
-	)
+	// Do not run a server-side WS ping loop: Network.framework clients often drop
+	// every ping interval (~25s) and open a new VPN session. App-level heartbeats
+	// refresh session IdleTimeout instead.
 	w := &wsConn{c: c, closed: make(chan struct{})}
-	_ = c.SetReadDeadline(time.Now().Add(pongWait))
-	c.SetPongHandler(func(_ string) error {
-		return c.SetReadDeadline(time.Now().Add(pongWait))
-	})
+	c.SetPongHandler(func(_ string) error { return nil })
 	c.SetPingHandler(func(appData string) error {
-		_ = c.SetReadDeadline(time.Now().Add(pongWait))
+		w.wrMu.Lock()
+		defer w.wrMu.Unlock()
 		return c.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(2*time.Second))
 	})
-	go w.pingLoop(pingPeriod)
 	return w
 }
 
@@ -62,8 +58,18 @@ func (w *wsConn) Read(p []byte) (int, error) {
 func (w *wsConn) Write(p []byte) (int, error) {
 	w.wrMu.Lock()
 	defer w.wrMu.Unlock()
-	if err := w.c.WriteMessage(websocket.BinaryMessage, p); err != nil {
-		return 0, err
+	// Avoid one giant WS message under download floods (speedtests).
+	const maxMsg = 32 * 1024
+	offset := 0
+	for offset < len(p) {
+		end := offset + maxMsg
+		if end > len(p) {
+			end = len(p)
+		}
+		if err := w.c.WriteMessage(websocket.BinaryMessage, p[offset:end]); err != nil {
+			return offset, err
+		}
+		offset = end
 	}
 	return len(p), nil
 }
@@ -78,26 +84,6 @@ func (w *wsConn) signalClosed() {
 	w.once.Do(func() {
 		close(w.closed)
 	})
-}
-
-func (w *wsConn) pingLoop(period time.Duration) {
-	ticker := time.NewTicker(period)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-w.closed:
-			return
-		case <-ticker.C:
-			w.wrMu.Lock()
-			err := w.c.WriteControl(websocket.PingMessage, nil, time.Now().Add(2*time.Second))
-			w.wrMu.Unlock()
-			if err != nil {
-				w.signalClosed()
-				_ = w.c.Close()
-				return
-			}
-		}
-	}
 }
 
 func (w *wsConn) LocalAddr() net.Addr  { return w.c.LocalAddr() }
@@ -155,8 +141,9 @@ func ListenWebSocketTLS(addr string, tlsCfg *tls.Config, path string) (net.Liste
 	}
 
 	upgrader := websocket.Upgrader{
-		ReadBufferSize:  64 * 1024,
-		WriteBufferSize: 64 * 1024,
+		ReadBufferSize:    256 * 1024,
+		WriteBufferSize:   256 * 1024,
+		EnableCompression: false,
 		CheckOrigin: func(_ *http.Request) bool {
 			return true
 		},

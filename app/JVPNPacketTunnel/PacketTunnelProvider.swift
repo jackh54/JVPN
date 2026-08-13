@@ -51,6 +51,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var lastAppliedClientIP: String?
     private var lastAppliedPrefixLen: Int?
     private var lastSentTelemetryRevision = -1
+    /// NWConnection allows only one outstanding send; heartbeat/telemetry must not race the data path.
+    private var sendQueue: [(conn: NWConnection, data: Data, done: (Error?) -> Void)] = []
+    private var sendInFlight = false
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         guard let proto = protocolConfiguration as? NETunnelProviderProtocol,
@@ -88,6 +91,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         runtimeStopped = false
         lastSentTelemetryRevision = -1
         startLock.unlock()
+        resetSendQueue(cancelPending: true)
         cancelHeartbeatAndTelemetry()
         let preferred = Self.loadPreferredTransport(host: config.host, port: config.port)
         transportCandidates = Self.resolveTransportCandidates(config.transportMode, preferred: preferred)
@@ -102,13 +106,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         wsRecvBuffer.removeAll(keepingCapacity: true)
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
+        resetSendQueue(cancelPending: true)
         cancelHeartbeatAndTelemetry()
 
         let tcp = NWProtocolTCP.Options()
         tcp.enableKeepalive = true
-        tcp.keepaliveIdle = 30
-        tcp.keepaliveInterval = 10
+        tcp.keepaliveIdle = 20
+        tcp.keepaliveInterval = 5
         tcp.keepaliveCount = 3
+        tcp.noDelay = true
         let tls = NWProtocolTLS.Options()
         let sec = tls.securityProtocolOptions
         sec_protocol_options_set_min_tls_protocol_version(sec, .TLSv13)
@@ -167,10 +173,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     self.finishStart(err, completionHandler)
                 }
             case .cancelled:
-                let err = NSError(domain: "JVPN", code: 8, userInfo: [NSLocalizedDescriptionKey: "Cancelled"])
-                if self.startCompleted {
+                // Intentional cancel during reconnect already armed a retry — don't nest another.
+                self.startLock.lock()
+                let alreadyArming = self.reconnectScheduled || self.runtimeStopped
+                self.startLock.unlock()
+                if self.startCompleted && !alreadyArming {
+                    let err = NSError(domain: "JVPN", code: 8, userInfo: [NSLocalizedDescriptionKey: "Cancelled"])
                     self.scheduleReconnectIfNeeded(reason: err)
-                } else {
+                } else if !self.startCompleted {
+                    let err = NSError(domain: "JVPN", code: 8, userInfo: [NSLocalizedDescriptionKey: "Cancelled"])
                     self.finishStart(err, completionHandler)
                 }
             case .setup, .waiting, .preparing:
@@ -193,6 +204,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         guard shouldReconnect, let cfg = backendConfig else { return }
 
         cancelHeartbeatAndTelemetry()
+        resetSendQueue(cancelPending: true)
         vpnConnection?.cancel()
         vpnConnection = nil
         reconnectWorkItem?.cancel()
@@ -221,10 +233,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         ioQueue.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    /// Exponential backoff 1s → 30s with up to 25% positive jitter.
+    /// Fast retry after drops (speedtest / path loss); then exponential up to 15s.
     private static func reconnectDelaySeconds(attempt: Int) -> TimeInterval {
         let cappedAttempt = max(1, attempt)
-        let base = min(30.0, pow(2.0, Double(cappedAttempt - 1)))
+        if cappedAttempt <= 4 {
+            return 0.2 + Double.random(in: 0...0.3)
+        }
+        let base = min(15.0, pow(2.0, Double(cappedAttempt - 4)))
         let jitter = base * Double.random(in: 0...0.25)
         return base + jitter
     }
@@ -441,12 +456,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
         var out = Data()
-        let batchLimit = useWebSocket ? 24 * 1024 : 128 * 1024
-        out.reserveCapacity(batchLimit)
+        // Keep WS messages small — large batched frames drop under speedtest load.
+        let batchLimit = useWebSocket ? 8 * 1024 : 64 * 1024
+        out.reserveCapacity(min(batchLimit, 64 * 1024))
         var i = index
         while i < packets.count {
             let framed = Self.frame(packets[i])
             if !out.isEmpty && out.count + framed.count > batchLimit {
+                break
+            }
+            // WebSocket: at most a few packets per message to limit latency spikes.
+            if useWebSocket && !out.isEmpty && i - index >= 4 {
                 break
             }
             out.append(framed)
@@ -539,14 +559,55 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    private func resetSendQueue(cancelPending: Bool) {
+        let pending = sendQueue
+        sendQueue.removeAll(keepingCapacity: true)
+        sendInFlight = false
+        guard cancelPending else { return }
+        let err = NSError(domain: "JVPN", code: 8, userInfo: [NSLocalizedDescriptionKey: "Send cancelled"])
+        for item in pending {
+            item.done(err)
+        }
+    }
+
     private func sendRaw(conn: NWConnection, data: Data, done: @escaping (Error?) -> Void) {
+        sendQueue.append((conn, data, done))
+        pumpSendQueue()
+    }
+
+    private func pumpSendQueue() {
+        guard !sendInFlight, !sendQueue.isEmpty else { return }
+        let item = sendQueue[0]
+        sendInFlight = true
+
+        let finish: (Error?) -> Void = { [weak self] err in
+            guard let self else { return }
+            // NWCompletion may arrive off our queue.
+            self.ioQueue.async {
+                if !self.sendQueue.isEmpty {
+                    self.sendQueue.removeFirst()
+                }
+                self.sendInFlight = false
+                item.done(err)
+                if let err {
+                    let rest = self.sendQueue
+                    self.sendQueue.removeAll(keepingCapacity: true)
+                    for pending in rest {
+                        pending.done(err)
+                    }
+                    return
+                }
+                self.pumpSendQueue()
+            }
+        }
+
         if useWebSocket {
             let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
             let ctx = NWConnection.ContentContext(identifier: "jvpn-ws", metadata: [meta])
-            conn.send(content: data, contentContext: ctx, isComplete: true, completion: .contentProcessed(done))
-            return
+            item.conn.send(content: item.data, contentContext: ctx, isComplete: true, completion: .contentProcessed(finish))
+        } else {
+            item.conn.send(content: item.data, completion: .contentProcessed(finish))
         }
-        conn.send(content: data, completion: .contentProcessed(done))
     }
 
     private func receiveExact(conn: NWConnection, count: Int, done: @escaping (Data?, Error?) -> Void) {
@@ -605,6 +666,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         lastAppliedPrefixLen = nil
         startLock.unlock()
         cancelHeartbeatAndTelemetry()
+        resetSendQueue(cancelPending: true)
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
         vpnConnection?.cancel()

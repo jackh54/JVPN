@@ -35,18 +35,15 @@ final class LocationTelemetryManager: NSObject, ObservableObject {
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         manager.distanceFilter = 50
+        manager.pausesLocationUpdatesAutomatically = false
         _ = JVPNAppGroupTelemetry.ensureClientID()
         enableBatteryMonitoring()
         publishTelemetry(force: true)
     }
 
+    /// Connect requires Always; When In Use alone is not enough.
     var isAuthorized: Bool {
-        switch authorizationStatus {
-        case .authorizedAlways, .authorizedWhenInUse:
-            return true
-        default:
-            return false
-        }
+        authorizationStatus == .authorizedAlways
     }
 
     var isDeniedOrRestricted: Bool {
@@ -64,25 +61,37 @@ final class LocationTelemetryManager: NSObject, ObservableObject {
         authorizationStatus = status
         switch status {
         case .notDetermined:
-            manager.requestWhenInUseAuthorization()
-        case .authorizedAlways, .authorizedWhenInUse:
+            // Shows While Using / Always / Don’t Allow (iOS).
+            manager.requestAlwaysAuthorization()
+        case .authorizedWhenInUse:
+            // Upgrade prompt to Always.
+            manager.requestAlwaysAuthorization()
+            locationError = "Choose “Always Allow” for location so JVPN can pick the best server while connected."
+        case .authorizedAlways:
+            configureBackgroundUpdates(true)
             manager.startUpdatingLocation()
             publishTelemetry(force: true)
         case .denied, .restricted:
-            locationError = "Location is required for best server selection. Enable Location for JVPN in Settings."
+            locationError = "Location must be set to Always for JVPN. Enable it in Settings."
         @unknown default:
-            locationError = "Location is required for best server selection."
+            locationError = "Location must be set to Always for best server selection."
         }
     }
 
     func startMonitoring() {
         guard isAuthorized else { return }
+        configureBackgroundUpdates(true)
         manager.startUpdatingLocation()
         publishTelemetry(force: false)
     }
 
     func stopMonitoring() {
+        configureBackgroundUpdates(false)
         manager.stopUpdatingLocation()
+    }
+
+    private func configureBackgroundUpdates(_ enabled: Bool) {
+        manager.allowsBackgroundLocationUpdates = enabled && isAuthorized
     }
 
     private func enableBatteryMonitoring() {
@@ -189,7 +198,6 @@ final class LocationTelemetryManager: NSObject, ObservableObject {
             }
         }
         throttleWorkItem = work
-        // Immediate on force (connect); otherwise mild throttle for GPS chatter.
         let delay: TimeInterval = force ? 0 : 2.0
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
@@ -201,12 +209,17 @@ extension LocationTelemetryManager: CLLocationManagerDelegate {
         Task { @MainActor in
             self.authorizationStatus = status
             switch status {
-            case .authorizedAlways, .authorizedWhenInUse:
+            case .authorizedAlways:
                 self.locationError = nil
+                self.configureBackgroundUpdates(true)
                 self.manager.startUpdatingLocation()
                 self.publishTelemetry(force: true)
+            case .authorizedWhenInUse:
+                self.locationError = "Choose “Always Allow” for location so JVPN can pick the best server while connected."
+                self.configureBackgroundUpdates(false)
             case .denied, .restricted:
-                self.locationError = "Location is required for best server selection. Enable Location for JVPN in Settings."
+                self.configureBackgroundUpdates(false)
+                self.locationError = "Location must be set to Always for JVPN. Enable it in Settings."
             case .notDetermined:
                 break
             @unknown default:

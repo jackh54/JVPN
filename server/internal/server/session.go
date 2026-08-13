@@ -111,7 +111,7 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 		connectedAt: time.Now().UTC(),
 		hub:         hub,
 		deviceInfo:  sanitizeDeviceInfo(hello.Device),
-		downstream:  make(chan []byte, 256),
+		downstream:  make(chan []byte, 4096),
 	}
 	hub.Register(clientIP, s)
 	defer hub.Unregister(clientIP)
@@ -260,7 +260,7 @@ func (s *Session) applyTelemetry(body []byte) {
 }
 
 func (s *Session) tunToTLS(c net.Conn) {
-	const maxBatchBytes = 128 * 1024
+	const maxBatchBytes = 32 * 1024
 	for pkt := range s.downstream {
 		var batch bytes.Buffer
 		_ = protocol.WriteFrame(&batch, pkt)
@@ -276,11 +276,12 @@ func (s *Session) tunToTLS(c net.Conn) {
 			}
 		}
 	SEND:
+		_ = c.SetWriteDeadline(time.Now().Add(30 * time.Second))
 		if _, err := c.Write(batch.Bytes()); err != nil {
 			log.Printf("write frame: %v", err)
 			return
 		}
-		// Stats were counted on enqueue path to avoid double-counting when batching.
+		_ = c.SetWriteDeadline(time.Time{})
 	}
 }
 

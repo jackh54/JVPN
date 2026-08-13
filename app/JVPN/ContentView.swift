@@ -172,10 +172,12 @@ struct ContentView: View {
             location.prepareForConnect()
             guard location.isAuthorized else {
                 if location.authorizationStatus == .notDetermined {
-                    message = "Allow Location access to continue. JVPN uses it for best server selection."
+                    message = "Allow Location — choose Always — for best server selection."
+                } else if location.authorizationStatus == .authorizedWhenInUse {
+                    message = "Open Settings and set Location to Always for JVPN."
                 } else {
                     message = location.locationError
-                        ?? "Location is required for best server selection. Enable Location for JVPN in Settings."
+                        ?? "Location must be Always for best server selection. Enable it in Settings."
                 }
                 return
             }

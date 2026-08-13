@@ -12,7 +12,15 @@
 	<string>$(JVPN_SHARED_TOKEN)</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>JVPN needs your location for best server selection.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>JVPN needs Always location access for best server selection while the VPN is connected.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>JVPN needs Always location access for best server selection while the VPN is connected.</string>
 	<key>NSLocationUsageDescription</key>
 	<string>JVPN needs your location for best server selection.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 </dict>
 </plist>
