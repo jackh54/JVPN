@@ -55,7 +55,7 @@ struct ContentView: View {
             }
             updateProtectionAnimations(isProtected)
         }
-        .onChange(of: isProtected) { protected in
+        .onChange(of: isProtected) { _, protected in
             updateProtectionAnimations(protected)
         }
     }
@@ -137,10 +137,10 @@ struct ContentView: View {
         VStack(spacing: 20) {
             ZStack {
                 if isProtected {
-                    Image(systemName: "checkmark.shield.fill")
+                    Image(systemName: "shield.checkered")
                         .font(.system(size: 56, weight: .light))
                         .foregroundStyle(accent.opacity(0.9))
-                        .opacity(Double(2.0 - pulseScale))
+                        .symbolEffect(.pulse, options: .repeating)
                 } else {
                     Image(systemName: "shield.slash")
                         .font(.system(size: 56, weight: .light))
