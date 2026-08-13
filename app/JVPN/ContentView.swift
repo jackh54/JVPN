@@ -53,19 +53,10 @@ struct ContentView: View {
             if location.isAuthorized {
                 location.startMonitoring()
             }
+            updateProtectionAnimations(isProtected)
         }
-        .onChange(of: isProtected) { _, protected in
-            if protected {
-                withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
-                    pulseScale = 1.08
-                }
-                withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
-                    ringRotation = 360
-                }
-            } else {
-                pulseScale = 1.0
-                ringRotation = 0
-            }
+        .onChange(of: isProtected) { protected in
+            updateProtectionAnimations(protected)
         }
     }
 
@@ -146,10 +137,10 @@ struct ContentView: View {
         VStack(spacing: 20) {
             ZStack {
                 if isProtected {
-                    Image(systemName: "shield.checkered")
+                    Image(systemName: "checkmark.shield.fill")
                         .font(.system(size: 56, weight: .light))
                         .foregroundStyle(accent.opacity(0.9))
-                        .symbolEffect(.pulse, options: .repeating)
+                        .opacity(Double(2.0 - pulseScale))
                 } else {
                     Image(systemName: "shield.slash")
                         .font(.system(size: 56, weight: .light))
@@ -406,6 +397,20 @@ struct ContentView: View {
                 JVPNDebugLog.app("toggleVPN connect error: \(error.localizedDescription)")
                 message = error.localizedDescription
             }
+        }
+    }
+
+    private func updateProtectionAnimations(_ protected: Bool) {
+        if protected {
+            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+                pulseScale = 1.08
+            }
+            withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
+                ringRotation = 360
+            }
+        } else {
+            pulseScale = 1.0
+            ringRotation = 0
         }
     }
 
