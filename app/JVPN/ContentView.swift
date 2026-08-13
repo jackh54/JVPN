@@ -8,10 +8,12 @@ import NetworkExtension
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var vpn = VPNManager.shared
-    @StateObject private var location = LocationTelemetryManager.shared
+    // Shared singletons must not be owned by @StateObject (lifetime/identity glitches on macOS 26).
+    @ObservedObject private var vpn = VPNManager.shared
+    @ObservedObject private var location = LocationTelemetryManager.shared
     @State private var message: String = ""
     @State private var isWorking = false
+    @State private var connectPressed = false
     @State private var pulseScale: CGFloat = 1.0
     @State private var ringRotation: Double = 0
 
@@ -230,64 +232,91 @@ struct ContentView: View {
 
     // MARK: - Connect Control
 
-    private var connectControl: some View {
-        Button {
-            Task { await toggleVPN() }
-        } label: {
-            ZStack {
-                if isProtected {
-                    Circle()
-                        .stroke(accent.opacity(0.2), lineWidth: 2)
-                        .frame(width: 200, height: 200)
-                        .scaleEffect(pulseScale)
+    private var isConnectBusy: Bool {
+        isWorking || vpn.status == .connecting || vpn.status == .disconnecting
+    }
 
-                    Circle()
-                        .stroke(
-                            AngularGradient(
-                                colors: [accent.opacity(0.5), accent.opacity(0.05), accent.opacity(0.5)],
-                                center: .center
-                            ),
-                            lineWidth: 2
-                        )
-                        .frame(width: 188, height: 188)
-                        .rotationEffect(.degrees(ringRotation))
-                }
+    /// Avoid SwiftUI `Button` / `_ButtonGesture` → `MainActor.assumeIsolated` on macOS 26,
+    /// which can SIGSEGV at a near-null address while dispatching the click.
+    private var connectControl: some View {
+        ZStack {
+            if isProtected {
+                Circle()
+                    .stroke(accent.opacity(0.2), lineWidth: 2)
+                    .frame(width: 200, height: 200)
+                    .scaleEffect(pulseScale)
 
                 Circle()
-                    .fill(
-                        RadialGradient(
-                            colors: [buttonFill.opacity(0.9), buttonFill],
-                            center: .topLeading,
-                            startRadius: 0,
-                            endRadius: 100
-                        )
+                    .stroke(
+                        AngularGradient(
+                            colors: [accent.opacity(0.5), accent.opacity(0.05), accent.opacity(0.5)],
+                            center: .center
+                        ),
+                        lineWidth: 2
                     )
-                    .frame(width: 156, height: 156)
-                    .shadow(color: buttonFill.opacity(0.45), radius: 24, y: 8)
-                    .overlay(
-                        Circle()
-                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                    )
+                    .frame(width: 188, height: 188)
+                    .rotationEffect(.degrees(ringRotation))
+            }
 
-                if isWorking || vpn.status == .connecting || vpn.status == .disconnecting {
-                    ProgressView()
-                        .controlSize(.large)
-                        .tint(.white)
-                } else {
-                    VStack(spacing: 8) {
-                        Image(systemName: isProtected ? "power" : "power")
-                            .font(.system(size: 32, weight: .medium))
-                        Text(isProtected ? "Disconnect" : "Connect")
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .tracking(0.3)
-                    }
-                    .foregroundStyle(.white)
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [buttonFill.opacity(0.9), buttonFill],
+                        center: .topLeading,
+                        startRadius: 0,
+                        endRadius: 100
+                    )
+                )
+                .frame(width: 156, height: 156)
+                .shadow(color: buttonFill.opacity(0.45), radius: 24, y: 8)
+                .overlay(
+                    Circle()
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+
+            if isConnectBusy {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "power")
+                        .font(.system(size: 32, weight: .medium))
+                    Text(isProtected ? "Disconnect" : "Connect")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .tracking(0.3)
                 }
+                .foregroundStyle(.white)
             }
         }
-        .buttonStyle(ScaleButtonStyle())
-        .disabled(isWorking || vpn.status == .connecting || vpn.status == .disconnecting)
+        .frame(width: 200, height: 200)
+        .contentShape(Circle())
+        .scaleEffect(connectPressed ? 0.94 : 1.0)
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: connectPressed)
+        .opacity(isConnectBusy ? 0.7 : 1.0)
+        .allowsHitTesting(!isConnectBusy)
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    if !connectPressed { connectPressed = true }
+                }
+                .onEnded { _ in
+                    connectPressed = false
+                    guard !isConnectBusy else { return }
+                    Task { @MainActor in
+                        await toggleVPN()
+                    }
+                }
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
         .accessibilityLabel(isProtected ? "Disconnect" : "Connect")
+        .accessibilityAction {
+            guard !isConnectBusy else { return }
+            Task { @MainActor in
+                await toggleVPN()
+            }
+        }
     }
 
     private var footerHint: some View {
@@ -429,14 +458,6 @@ struct ContentView: View {
         @unknown default:
             return "Offline"
         }
-    }
-}
-
-private struct ScaleButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
 
