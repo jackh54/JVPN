@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>JVPNServerHost</key>
+	<string>$(JVPN_SERVER_HOST)</string>
+	<key>JVPNServerPort</key>
+	<string>$(JVPN_SERVER_PORT)</string>
+	<key>JVPNSharedToken</key>
+	<string>$(JVPN_SHARED_TOKEN)</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>JVPN needs your location for best server selection.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>JVPN needs your location for best server selection.</string>
+</dict>
+</plist>

@@ -1,0 +1,13 @@
+// Optional alternative to Secrets.local.xcconfig:
+// Prefer Configs/Secrets.local.xcconfig (see README).
+//
+// If you use this file instead:
+// 1. Copy to JVPNServiceConfig.Local.swift (gitignored)
+// 2. Set the token / host below
+// 3. Point JVPNServiceConfig statics at these values manually, or rely on xcconfig
+//
+// enum JVPNServiceConfigLocal {
+//     static let serverHost = "vpn.blakout.dev"
+//     static let serverPort: UInt16 = 443
+//     static let sharedToken = "PASTE_YOUR_SERVER_TOKEN_HERE"
+// }

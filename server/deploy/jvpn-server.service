@@ -1,0 +1,26 @@
+[Unit]
+Description=JVPN server (TLS + TUN bridge)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Edit paths and flags to match your install.
+ExecStart=/usr/local/bin/jvpn-server \
+  -data-dir /etc/jvpn \
+  -listen :8443 \
+  -transport ws \
+  -ws-path /ws \
+  -tun-name jvpn0 \
+  -setup-tun \
+  -setup-nat \
+  -admin-listen 127.0.0.1:18080 \
+  -admin-user CHANGE_ME \
+  -admin-pass CHANGE_ME
+# Optional: extra SANs when auto-generating TLS (first run). Remove if unused.
+# Environment=JVPN_TLS_SAN=15.204.210.101,vpn.example.com
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

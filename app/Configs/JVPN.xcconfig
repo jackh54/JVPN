@@ -1,0 +1,7 @@
+// Shared build settings for the JVPN app target.
+// Optional local overrides (gitignored): copy Secrets.local.xcconfig.example → Secrets.local.xcconfig
+JVPN_SERVER_HOST = vpn.blakout.dev
+JVPN_SERVER_PORT = 443
+JVPN_SHARED_TOKEN = REPLACE_WITH_YOUR_SERVER_TOKEN
+
+#include? "Secrets.local.xcconfig"

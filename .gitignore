@@ -1,0 +1,58 @@
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+**/xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+timeline.xctimeline
+playground.xcworkspace
+
+# Local secrets (never commit real tokens)
+app/Configs/Secrets.local.xcconfig
+app/JVPN/JVPNServiceConfig.Local.swift
+**/*.Local.swift
+!**/*.Local.swift.example
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Server local / build artifacts
+server/.dev/
+server/jvpn-data/
+server/dist/
+server/jvpn-server
+server/*.pem
+server/*.crt
+server/*.key
+**/token
+!**/*.token.example
+
+# Go
+server/vendor/
+
+# Env / credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.mobileprovision
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*~
+
+# Cursor
+.cursor/
