@@ -17,12 +17,8 @@ func configureNAT(tun string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0644); err != nil {
-		cmd := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1")
-		cmd.Stderr = os.Stderr
-		if e := cmd.Run(); e != nil {
-			return fmt.Errorf("enable ip_forward: %w; sysctl fallback: %v", err, e)
-		}
+	if err := ensureIPForward(); err != nil {
+		return err
 	}
 	log.Printf("setup-nat: tun=%s wan=%s (MASQUERADE + FORWARD)", tun, wan)
 
@@ -39,6 +35,33 @@ func configureNAT(tun string) error {
 		return fmt.Errorf("iptables forward wan->tun: %w", err)
 	}
 	return nil
+}
+
+// ensureIPForward turns on IPv4 forwarding. In Docker (even with host networking) /proc/sys is
+// often read-only; if the host already has forwarding enabled we treat that as success.
+func ensureIPForward() error {
+	if ipForwardEnabled() {
+		return nil
+	}
+	writeErr := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1\n"), 0644)
+	if writeErr == nil && ipForwardEnabled() {
+		return nil
+	}
+	cmd := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1")
+	cmd.Stderr = os.Stderr
+	sysErr := cmd.Run()
+	if ipForwardEnabled() {
+		return nil
+	}
+	return fmt.Errorf("enable ip_forward (set on host: sysctl -w net.ipv4.ip_forward=1): write=%v sysctl=%v", writeErr, sysErr)
+}
+
+func ipForwardEnabled() bool {
+	b, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(b)) == "1"
 }
 
 func defaultWANInterface() (string, error) {

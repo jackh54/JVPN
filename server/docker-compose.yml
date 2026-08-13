@@ -16,6 +16,9 @@ services:
     container_name: jvpn-server
     restart: unless-stopped
     network_mode: host
+    # Host must have IPv4 forwarding on (containers often cannot write /proc/sys):
+    #   sysctl -w net.ipv4.ip_forward=1
+    #   echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-jvpn.conf && sysctl --system
     cap_add:
       - NET_ADMIN
     devices:
