@@ -134,61 +134,59 @@ const indexHTML = `<!doctype html>
   <title>JVPN Admin</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <style>
     :root {
-      --bg: #0c0e10;
-      --bg2: #12151a;
-      --panel: rgba(22, 26, 32, 0.92);
-      --panel-solid: #161a20;
-      --line: rgba(255,255,255,0.07);
-      --line2: rgba(255,255,255,0.12);
-      --text: #eef1f4;
-      --muted: #8b95a5;
+      --bg: #090b0d;
+      --bg2: #0f1216;
+      --panel: rgba(18, 21, 26, 0.88);
+      --panel-solid: #12151a;
+      --line: rgba(255,255,255,0.06);
+      --line2: rgba(255,255,255,0.10);
+      --text: #f0f2f5;
+      --muted: #7a8494;
       --accent: #3dde9a;
-      --accent-dim: rgba(61,222,154,0.14);
-      --warn: #f0b429;
-      --danger: #ff6b7a;
-      --danger-bg: rgba(255,107,122,0.1);
-      --shadow: 0 18px 50px rgba(0,0,0,0.35);
-      --radius: 16px;
-      --font: "Outfit", ui-sans-serif, system-ui, sans-serif;
+      --accent-dim: rgba(61,222,154,0.12);
+      --accent-glow: rgba(61,222,154,0.25);
+      --warn: #f5c542;
+      --danger: #ff5c6d;
+      --danger-bg: rgba(255,92,109,0.08);
+      --shadow: 0 20px 60px rgba(0,0,0,0.4);
+      --shadow-sm: 0 4px 16px rgba(0,0,0,0.25);
+      --radius: 14px;
+      --font: "Inter", ui-sans-serif, system-ui, sans-serif;
       --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
     }
     * { box-sizing: border-box; }
     html, body { margin:0; min-height:100%; }
     body {
-      font: 14px/1.45 var(--font);
+      font: 13.5px/1.5 var(--font);
       color: var(--text);
       background:
-        radial-gradient(900px 480px at 85% -10%, rgba(61,222,154,0.09), transparent 55%),
-        radial-gradient(700px 420px at -10% 20%, rgba(90,140,255,0.07), transparent 50%),
-        linear-gradient(180deg, #101318 0%, var(--bg) 40%, #0a0b0d 100%);
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(61,222,154,0.07), transparent),
+        radial-gradient(ellipse 60% 40% at 100% 50%, rgba(60,100,200,0.05), transparent),
+        var(--bg);
       background-attachment: fixed;
+      -webkit-font-smoothing: antialiased;
     }
-    body::before {
-      content:"";
-      position:fixed; inset:0; pointer-events:none; opacity:0.35; z-index:0;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
-    }
-    .app { position:relative; z-index:1; max-width:1440px; margin:0 auto; padding:20px 20px 48px; }
+    .app { position:relative; z-index:1; max-width:1400px; margin:0 auto; padding:24px 24px 56px; }
     .topbar {
       display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
-      padding:14px 18px; margin-bottom:18px;
-      background: rgba(14,16,20,0.72); border:1px solid var(--line); border-radius:18px;
-      backdrop-filter: blur(14px); box-shadow: var(--shadow);
-      animation: rise 0.5s ease both;
+      padding:16px 20px; margin-bottom:20px;
+      background: var(--panel); border:1px solid var(--line); border-radius:16px;
+      backdrop-filter: blur(20px); box-shadow: var(--shadow-sm);
+      animation: rise 0.4s ease both;
     }
-    .brand { display:flex; align-items:center; gap:12px; }
+    .brand { display:flex; align-items:center; gap:14px; }
     .mark {
-      width:36px; height:36px; border-radius:11px;
-      background: linear-gradient(145deg, #4af0ad, #1fa86a);
-      display:grid; place-items:center; color:#04140c; font-weight:700; font-size:14px; letter-spacing:-0.04em;
-      box-shadow: 0 0 0 4px var(--accent-dim);
+      width:38px; height:38px; border-radius:10px;
+      background: linear-gradient(135deg, #3dde9a 0%, #1a9e62 100%);
+      display:grid; place-items:center; color:#04140c; font-weight:700; font-size:15px; letter-spacing:-0.04em;
+      box-shadow: 0 0 20px var(--accent-glow);
     }
-    .brand h1 { margin:0; font-size:18px; font-weight:600; letter-spacing:-0.03em; }
-    .brand p { margin:2px 0 0; font-size:12px; color:var(--muted); }
+    .brand h1 { margin:0; font-size:17px; font-weight:600; letter-spacing:-0.025em; }
+    .brand p { margin:1px 0 0; font-size:12px; color:var(--muted); font-weight:400; }
     .status-cluster { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
     .chip {
       display:inline-flex; align-items:center; gap:8px;
@@ -203,33 +201,34 @@ const indexHTML = `<!doctype html>
     }
     .dot.off { background:var(--danger); box-shadow:none; animation:none; }
     .metrics {
-      display:grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap:10px;
-      margin-bottom:18px; animation: rise 0.55s ease both; animation-delay:0.05s;
+      display:grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap:12px;
+      margin-bottom:20px; animation: rise 0.45s ease both; animation-delay:0.04s;
     }
     .metric {
-      padding:14px 14px 12px; border-radius:14px; border:1px solid var(--line);
-      background: var(--panel); backdrop-filter: blur(10px);
-      transition: border-color 0.2s ease, transform 0.2s ease;
+      padding:16px 16px 14px; border-radius:var(--radius); border:1px solid var(--line);
+      background: var(--panel); backdrop-filter: blur(12px);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
     }
-    .metric:hover { border-color: var(--line2); transform: translateY(-1px); }
-    .metric .k { font-size:11px; color:var(--muted); letter-spacing:0.06em; text-transform:uppercase; font-weight:500; }
-    .metric .v { margin-top:8px; font-size:24px; font-weight:650; letter-spacing:-0.03em; font-variant-numeric: tabular-nums; }
-    .metric .s { margin-top:4px; font-size:12px; color:var(--muted); min-height:1.2em; }
+    .metric:hover { border-color: var(--line2); box-shadow: var(--shadow-sm); }
+    .metric .k { font-size:11px; color:var(--muted); letter-spacing:0.04em; text-transform:uppercase; font-weight:500; }
+    .metric .v { margin-top:6px; font-size:26px; font-weight:700; letter-spacing:-0.04em; font-variant-numeric: tabular-nums; line-height:1.1; }
+    .metric .s { margin-top:6px; font-size:11.5px; color:var(--muted); min-height:1.2em; }
+    .metric:first-child .v { color: var(--accent); }
     .stage {
-      display:grid; grid-template-columns: 1.35fr 0.9fr; gap:14px; margin-bottom:14px;
-      animation: rise 0.6s ease both; animation-delay:0.1s;
+      display:grid; grid-template-columns: 1.4fr 0.85fr; gap:16px; margin-bottom:16px;
+      animation: rise 0.5s ease both; animation-delay:0.08s;
     }
     .panel {
       background: var(--panel); border:1px solid var(--line); border-radius: var(--radius);
-      box-shadow: var(--shadow); overflow:hidden;
+      box-shadow: var(--shadow-sm); overflow:hidden;
     }
     .panel-hd {
       display:flex; align-items:flex-end; justify-content:space-between; gap:12px;
-      padding:16px 18px 12px; border-bottom:1px solid var(--line);
+      padding:16px 20px 14px; border-bottom:1px solid var(--line);
     }
-    .panel-hd h2 { margin:0; font-size:15px; font-weight:600; letter-spacing:-0.02em; }
-    .panel-hd .sub { font-size:12px; color:var(--muted); }
-    .panel-bd { padding:14px 18px 18px; }
+    .panel-hd h2 { margin:0; font-size:14px; font-weight:600; letter-spacing:-0.01em; }
+    .panel-hd .sub { font-size:11.5px; color:var(--muted); margin-top:2px; }
+    .panel-bd { padding:16px 20px 20px; }
     #map {
       height: min(52vh, 460px); width:100%; border-radius:12px; border:1px solid var(--line);
       background:#0e1217; overflow:hidden;
@@ -256,27 +255,29 @@ const indexHTML = `<!doctype html>
     .kv .v { word-break: break-word; }
     .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }
     button {
-      font: 500 12px/1 var(--font); letter-spacing:0.01em;
-      border-radius:10px; padding:10px 12px; cursor:pointer;
-      border:1px solid var(--line2); background: rgba(255,255,255,0.04); color: var(--text);
-      transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+      font: 500 12px/1 var(--font); letter-spacing:0.005em;
+      border-radius:8px; padding:8px 14px; cursor:pointer;
+      border:1px solid var(--line2); background: rgba(255,255,255,0.03); color: var(--text);
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
     }
-    button:hover { background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.18); }
-    button:active { transform: scale(0.98); }
-    button.primary { background: var(--accent-dim); border-color: rgba(61,222,154,0.35); color: #b6ffe0; }
-    button.danger { background: var(--danger-bg); border-color: rgba(255,107,122,0.35); color: #ffc2c9; }
+    button:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.15); }
+    button:active { transform: scale(0.97); }
+    button.primary { background: var(--accent-dim); border-color: rgba(61,222,154,0.3); color: #a8f5d0; }
+    button.primary:hover { background: rgba(61,222,154,0.18); }
+    button.danger { background: var(--danger-bg); border-color: rgba(255,92,109,0.3); color: #ffb3bc; }
+    button.danger:hover { background: rgba(255,92,109,0.14); }
     .split { display:grid; grid-template-columns: 1.4fr 0.8fr; gap:14px; animation: rise 0.65s ease both; animation-delay:0.15s; }
     .table-wrap { overflow:auto; max-height:420px; }
     table { width:100%; border-collapse:collapse; }
-    th, td { text-align:left; padding:11px 12px; font-size:12.5px; border-bottom:1px solid var(--line); vertical-align:middle; }
+    th, td { text-align:left; padding:10px 14px; font-size:12.5px; border-bottom:1px solid var(--line); vertical-align:middle; }
     th {
-      position:sticky; top:0; z-index:1; background: rgba(18,21,26,0.96); backdrop-filter: blur(8px);
-      color: var(--muted); font-weight:500; font-size:11px; letter-spacing:0.05em; text-transform:uppercase;
+      position:sticky; top:0; z-index:1; background: var(--panel-solid); backdrop-filter: blur(8px);
+      color: var(--muted); font-weight:500; font-size:10.5px; letter-spacing:0.04em; text-transform:uppercase;
     }
-    tbody tr { cursor:pointer; transition: background 0.15s ease; }
-    tbody tr:hover { background: rgba(255,255,255,0.03); }
+    tbody tr { cursor:pointer; transition: background 0.12s ease; }
+    tbody tr:hover { background: rgba(255,255,255,0.025); }
     tbody tr.sel { background: var(--accent-dim); }
-    tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+    tbody tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
     .mono { font-family: var(--mono); font-size:12px; }
     .muted { color: var(--muted); }
     .pill {
@@ -336,7 +337,7 @@ const indexHTML = `<!doctype html>
         <div class="mark">J</div>
         <div>
           <h1>JVPN Control</h1>
-          <p>Live sessions · traffic · device telemetry</p>
+          <p>Session monitoring &amp; device telemetry</p>
         </div>
       </div>
       <div class="status-cluster">

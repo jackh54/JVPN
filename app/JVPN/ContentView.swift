@@ -12,38 +12,41 @@ struct ContentView: View {
     @StateObject private var location = LocationTelemetryManager.shared
     @State private var message: String = ""
     @State private var isWorking = false
+    @State private var pulseScale: CGFloat = 1.0
+    @State private var ringRotation: Double = 0
+
+    private let accent = Color(red: 0.24, green: 0.87, blue: 0.60)
+    private let danger = Color(red: 0.95, green: 0.35, blue: 0.42)
+    private let surfaceElevated = Color(red: 0.15, green: 0.17, blue: 0.21)
 
     var body: some View {
         ZStack {
-            backgroundGradient
+            backgroundLayer
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                Spacer(minLength: 24)
+                headerBar
+                    .padding(.top, 12)
+                    .padding(.horizontal, 24)
 
-                brandBlock
-                    .padding(.bottom, 28)
+                Spacer(minLength: 20)
 
-                Text(statusLabel(vpn.status))
-                    .font(.system(size: 22, weight: .semibold, design: .rounded))
-                    .foregroundStyle(statusColor)
-                    .padding(.bottom, 8)
-
-                Text(subtitleText)
-                    .font(.system(size: 14, weight: .regular, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 36)
-                    .frame(minHeight: 40)
+                statusHero
+                    .padding(.horizontal, 24)
 
                 Spacer()
 
-                connectButton
-                    .padding(.bottom, 56)
+                connectControl
+                    .padding(.bottom, 48)
+
+                footerHint
+                    .padding(.horizontal, 32)
+                    .padding(.bottom, 36)
             }
-            .frame(maxWidth: 420)
+            .frame(maxWidth: 440)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .preferredColorScheme(.dark)
         .task {
             await vpn.load()
             location.prepareForConnect()
@@ -51,65 +54,262 @@ struct ContentView: View {
                 location.startMonitoring()
             }
         }
-    }
-
-    private var brandBlock: some View {
-        VStack(spacing: 14) {
-            Image("BrandMark")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 88, height: 88)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
-
-            Text("JVPN")
-                .font(.system(size: 40, weight: .bold, design: .rounded))
-                .foregroundStyle(.primary)
-                .tracking(1.2)
+        .onChange(of: isProtected) { _, protected in
+            if protected {
+                withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+                    pulseScale = 1.08
+                }
+                withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
+                    ringRotation = 360
+                }
+            } else {
+                pulseScale = 1.0
+                ringRotation = 0
+            }
         }
     }
 
-    private var connectButton: some View {
+    // MARK: - Background
+
+    private var backgroundLayer: some View {
+        ZStack {
+            Color(red: 0.06, green: 0.07, blue: 0.09)
+
+            RadialGradient(
+                colors: [accent.opacity(isProtected ? 0.12 : 0.06), .clear],
+                center: .top,
+                startRadius: 20,
+                endRadius: 420
+            )
+
+            RadialGradient(
+                colors: [Color(red: 0.2, green: 0.35, blue: 0.7).opacity(0.08), .clear],
+                center: .bottomTrailing,
+                startRadius: 10,
+                endRadius: 350
+            )
+
+            if isProtected {
+                Circle()
+                    .fill(accent.opacity(0.04))
+                    .frame(width: 500, height: 500)
+                    .blur(radius: 80)
+                    .offset(y: 60)
+                    .scaleEffect(pulseScale)
+            }
+        }
+    }
+
+    // MARK: - Header
+
+    private var headerBar: some View {
+        HStack(spacing: 12) {
+            Image("BrandMark")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 36, height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            Text("JVPN")
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+
+            Spacer()
+
+            statusPill
+        }
+    }
+
+    private var statusPill: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(statusDotColor)
+                .frame(width: 7, height: 7)
+                .shadow(color: statusDotColor.opacity(0.6), radius: 4)
+
+            Text(statusLabel(vpn.status))
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(statusDotColor)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(
+            Capsule()
+                .fill(statusDotColor.opacity(0.12))
+                .overlay(Capsule().stroke(statusDotColor.opacity(0.25), lineWidth: 1))
+        )
+    }
+
+    // MARK: - Status Hero
+
+    private var statusHero: some View {
+        VStack(spacing: 20) {
+            ZStack {
+                if isProtected {
+                    Image(systemName: "shield.checkered")
+                        .font(.system(size: 56, weight: .light))
+                        .foregroundStyle(accent.opacity(0.9))
+                        .symbolEffect(.pulse, options: .repeating)
+                } else {
+                    Image(systemName: "shield.slash")
+                        .font(.system(size: 56, weight: .light))
+                        .foregroundStyle(Color.white.opacity(0.25))
+                }
+            }
+            .frame(height: 72)
+
+            VStack(spacing: 8) {
+                Text(heroTitle)
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+
+                Text(subtitleText)
+                    .font(.system(size: 15, weight: .regular, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.5))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                    .frame(minHeight: 44)
+            }
+
+            if isProtected {
+                connectionInfoCard
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+        }
+        .animation(.spring(response: 0.45, dampingFraction: 0.82), value: isProtected)
+    }
+
+    private var heroTitle: String {
+        switch vpn.status {
+        case .connected:
+            return "You're Protected"
+        case .connecting:
+            return "Connecting…"
+        case .reasserting:
+            return "Reconnecting…"
+        case .disconnecting:
+            return "Disconnecting…"
+        default:
+            return "Not Protected"
+        }
+    }
+
+    private var connectionInfoCard: some View {
+        HStack(spacing: 0) {
+            infoCell(icon: "lock.fill", label: "Encrypted", value: "AES-256")
+            divider
+            infoCell(icon: "network", label: "Tunnel", value: "Active")
+            divider
+            infoCell(icon: "location.fill", label: "GPS", value: location.isAuthorized ? "On" : "Off")
+        }
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(surfaceElevated)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                )
+        )
+    }
+
+    private func infoCell(icon: String, label: String, value: String) -> some View {
+        VStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(accent.opacity(0.8))
+            Text(label)
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.4))
+                .textCase(.uppercase)
+                .tracking(0.5)
+            Text(value)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.85))
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.06))
+            .frame(width: 1, height: 36)
+    }
+
+    // MARK: - Connect Control
+
+    private var connectControl: some View {
         Button {
             Task { await toggleVPN() }
         } label: {
             ZStack {
+                if isProtected {
+                    Circle()
+                        .stroke(accent.opacity(0.2), lineWidth: 2)
+                        .frame(width: 200, height: 200)
+                        .scaleEffect(pulseScale)
+
+                    Circle()
+                        .stroke(
+                            AngularGradient(
+                                colors: [accent.opacity(0.5), accent.opacity(0.05), accent.opacity(0.5)],
+                                center: .center
+                            ),
+                            lineWidth: 2
+                        )
+                        .frame(width: 188, height: 188)
+                        .rotationEffect(.degrees(ringRotation))
+                }
+
                 Circle()
-                    .fill(buttonFill)
-                    .frame(width: 168, height: 168)
-                    .shadow(color: buttonFill.opacity(0.45), radius: 22, y: 10)
+                    .fill(
+                        RadialGradient(
+                            colors: [buttonFill.opacity(0.9), buttonFill],
+                            center: .topLeading,
+                            startRadius: 0,
+                            endRadius: 100
+                        )
+                    )
+                    .frame(width: 156, height: 156)
+                    .shadow(color: buttonFill.opacity(0.45), radius: 24, y: 8)
+                    .overlay(
+                        Circle()
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    )
 
                 if isWorking || vpn.status == .connecting || vpn.status == .disconnecting {
                     ProgressView()
                         .controlSize(.large)
                         .tint(.white)
                 } else {
-                    VStack(spacing: 6) {
-                        Image(systemName: isProtected ? "lock.fill" : "power")
-                            .font(.system(size: 36, weight: .semibold))
+                    VStack(spacing: 8) {
+                        Image(systemName: isProtected ? "power" : "power")
+                            .font(.system(size: 32, weight: .medium))
                         Text(isProtected ? "Disconnect" : "Connect")
-                            .font(.system(size: 16, weight: .semibold, design: .rounded))
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .tracking(0.3)
                     }
                     .foregroundStyle(.white)
                 }
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ScaleButtonStyle())
         .disabled(isWorking || vpn.status == .connecting || vpn.status == .disconnecting)
         .accessibilityLabel(isProtected ? "Disconnect" : "Connect")
     }
 
-    private var backgroundGradient: some View {
-        LinearGradient(
-            colors: [
-                Color(red: 0.93, green: 0.95, blue: 0.97),
-                Color(red: 0.86, green: 0.90, blue: 0.94),
-                Color(red: 0.78, green: 0.85, blue: 0.90),
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+    private var footerHint: some View {
+        Group {
+            if !isProtected && message.isEmpty && vpn.lastError == nil && !JVPNServiceConfig.isPlaceholderConfiguration {
+                Text("Your traffic is unencrypted until you connect.")
+                    .font(.system(size: 12, weight: .regular, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.3))
+            }
+        }
     }
+
+    // MARK: - Computed Properties
 
     private var isProtected: Bool {
         switch vpn.status {
@@ -121,25 +321,25 @@ struct ContentView: View {
     }
 
     private var buttonFill: Color {
-        isProtected
-            ? Color(red: 0.78, green: 0.22, blue: 0.24)
-            : Color(red: 0.12, green: 0.55, blue: 0.42)
+        isProtected ? danger : accent
     }
 
-    private var statusColor: Color {
+    private var statusDotColor: Color {
         switch vpn.status {
         case .connected:
-            return Color(red: 0.10, green: 0.48, blue: 0.36)
+            return accent
         case .connecting, .reasserting:
-            return Color(red: 0.45, green: 0.40, blue: 0.15)
+            return Color(red: 0.95, green: 0.75, blue: 0.25)
+        case .disconnecting:
+            return Color.white.opacity(0.4)
         default:
-            return .secondary
+            return Color.white.opacity(0.35)
         }
     }
 
     private var subtitleText: String {
         if JVPNServiceConfig.isPlaceholderConfiguration {
-            return "Configuration error."
+            return "Configuration error — check your server token."
         }
         if let err = location.locationError, !location.isAuthorized {
             return err
@@ -152,15 +352,17 @@ struct ContentView: View {
         }
         switch vpn.status {
         case .connected:
-            return "Your connection is encrypted."
+            return "All network traffic is routed through the secure tunnel."
         case .connecting:
-            return "Establishing secure tunnel…"
+            return "Establishing encrypted tunnel to server…"
         case .reasserting:
-            return "Restoring your tunnel…"
+            return "Restoring your secure connection…"
         default:
-            return "Tap Connect to protect your traffic."
+            return "Tap the button below to encrypt your connection."
         }
     }
+
+    // MARK: - Actions
 
     private func toggleVPN() async {
         message = ""
@@ -186,7 +388,6 @@ struct ContentView: View {
             }
             if location.lastLocation == nil {
                 location.startMonitoring()
-                // Brief wait for a first fix when already authorized.
                 try? await Task.sleep(nanoseconds: 800_000_000)
                 if location.lastLocation == nil {
                     message = "Waiting for a GPS fix. Move near a window and try again."
@@ -211,7 +412,7 @@ struct ContentView: View {
     private func statusLabel(_ s: NEVPNStatus) -> String {
         switch s {
         case .invalid, .disconnected:
-            return "Not Protected"
+            return "Offline"
         case .connecting:
             return "Connecting"
         case .connected:
@@ -219,10 +420,18 @@ struct ContentView: View {
         case .reasserting:
             return "Reconnecting"
         case .disconnecting:
-            return "Not Protected"
+            return "Disconnecting"
         @unknown default:
-            return "Not Protected"
+            return "Offline"
         }
+    }
+}
+
+private struct ScaleButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1.0)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
 
