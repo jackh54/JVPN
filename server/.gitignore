@@ -1,4 +1,5 @@
 .dev/
 jvpn-data/
 dist/
-jvpn-server
+# Binary built in this directory (not cmd/jvpn-server/)
+/jvpn-server

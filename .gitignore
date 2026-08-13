@@ -30,13 +30,13 @@ Icon?
 server/.dev/
 server/jvpn-data/
 server/dist/
-server/jvpn-server
+# Built binary only (do not ignore cmd/jvpn-server/ sources)
+/server/jvpn-server
 server/*.pem
 server/*.crt
 server/*.key
 **/token
 !**/*.token.example
-
 # Go
 server/vendor/
 
