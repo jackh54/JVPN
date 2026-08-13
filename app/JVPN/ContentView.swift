@@ -173,11 +173,13 @@ struct ContentView: View {
             guard location.isAuthorized else {
                 if location.authorizationStatus == .notDetermined {
                     message = "Allow Location — choose Always — for best server selection."
+                }
 #if os(iOS)
-                } else if location.authorizationStatus == .authorizedWhenInUse {
+                else if location.authorizationStatus == .authorizedWhenInUse {
                     message = "Open Settings and set Location to Always for JVPN."
+                }
 #endif
-                } else {
+                else {
                     message = location.locationError
                         ?? "Location must be Always for best server selection. Enable it in Settings."
                 }
