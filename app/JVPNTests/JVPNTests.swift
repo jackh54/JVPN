@@ -2,18 +2,23 @@
 //  JVPNTests.swift
 //  JVPNTests
 //
-//  Created by Jack Harris on 4/20/26.
-//
 
 import Testing
 @testable import JVPN
 
 struct JVPNTests {
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-        // Swift Testing Documentation
-        // https://developer.apple.com/documentation/testing
+    @Test func udpOverTCPTransportIdentifier() {
+        #expect(JVPNConnectionMode.standard.tunnelTransport == "auto")
+        #expect(JVPNConnectionMode.udpOverTCP.tunnelTransport == "uot")
+        #expect(JVPNConnectionMode.udpOverTCP.rawValue == "udpOverTCP")
+        #expect(JVPNConnectionMode(rawValue: "udpOverTCP") == .udpOverTCP)
+        #expect(JVPNConnectionMode(rawValue: "unknown") == nil)
     }
 
+    @Test func experimentalModeLabels() {
+        #expect(JVPNConnectionMode.udpOverTCP.title.contains("UDP-over-TCP"))
+        #expect(JVPNConnectionMode.standard.title == "Standard")
+        #expect(JVPNServiceConfig.uotPath == "/dns-query")
+    }
 }

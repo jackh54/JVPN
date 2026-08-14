@@ -116,13 +116,16 @@ final class VPNManager: ObservableObject {
         defer { isInstallingConfiguration = false }
 
         let m = manager ?? NETunnelProviderManager()
+        let mode = JVPNExperimentalSettings.shared.connectionMode
+        let transport = mode.tunnelTransport
         let providerConfiguration: [String: NSObject] = [
             "host": JVPNServiceConfig.serverHost as NSString,
             "port": NSNumber(value: JVPNServiceConfig.serverPort),
             "token": JVPNServiceConfig.sharedToken as NSString,
             "acceptInsecureTLS": NSNumber(value: JVPNServiceConfig.acceptSelfSignedTLS),
-            "transport": JVPNServiceConfig.transport as NSString,
+            "transport": transport as NSString,
             "wsPath": JVPNServiceConfig.webSocketPath as NSString,
+            "uotPath": JVPNServiceConfig.uotPath as NSString,
             "platform": Self.runtimePlatformTag as NSString,
         ]
         let existingProto = m.protocolConfiguration as? NETunnelProviderProtocol
@@ -130,7 +133,8 @@ final class VPNManager: ObservableObject {
             existingProto?.providerBundleIdentifier == tunnelProviderIdentifier &&
             existingProto?.serverAddress == JVPNServiceConfig.serverHost &&
             NSDictionary(dictionary: existingProto?.providerConfiguration ?? [:]).isEqual(to: providerConfiguration)
-        let shouldSave = !configMatches || !m.isEnabled || m.isOnDemandEnabled || !(m.onDemandRules?.isEmpty ?? true)
+        let expectedName = mode == .udpOverTCP ? "JVPN Experimental" : "JVPN"
+        let shouldSave = !configMatches || !m.isEnabled || m.isOnDemandEnabled || !(m.onDemandRules?.isEmpty ?? true) || m.localizedDescription != expectedName
 
         if !shouldSave {
             manager = m
@@ -144,14 +148,14 @@ final class VPNManager: ObservableObject {
         proto.serverAddress = JVPNServiceConfig.serverHost
         proto.providerConfiguration = providerConfiguration
         m.protocolConfiguration = proto
-        m.localizedDescription = "JVPN"
+        m.localizedDescription = expectedName
         m.isEnabled = true
         // Keep on-demand disabled so the tunnel only starts from explicit user action.
         // This avoids system-driven connect/reconnect loops when a profile is saved at launch.
         m.onDemandRules = []
         m.isOnDemandEnabled = false
         JVPNDebugLog.app(
-            "installConfiguration host=\(JVPNServiceConfig.serverHost) port=\(JVPNServiceConfig.serverPort) tokenLen=\(JVPNServiceConfig.sharedToken.count) acceptInsecureTLS=\(JVPNServiceConfig.acceptSelfSignedTLS) transport=\(JVPNServiceConfig.transport) wsPath=\(JVPNServiceConfig.webSocketPath)"
+            "installConfiguration host=\(JVPNServiceConfig.serverHost) port=\(JVPNServiceConfig.serverPort) tokenLen=\(JVPNServiceConfig.sharedToken.count) acceptInsecureTLS=\(JVPNServiceConfig.acceptSelfSignedTLS) transport=\(transport) wsPath=\(JVPNServiceConfig.webSocketPath) uotPath=\(JVPNServiceConfig.uotPath)"
         )
         try await m.saveToPreferences()
         manager = try await reloadCurrentManagerFromPreferences()

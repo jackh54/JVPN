@@ -16,6 +16,7 @@ private enum TunnelConfigKey {
     static let acceptInsecureTLS = "acceptInsecureTLS"
     static let transport = "transport"
     static let wsPath = "wsPath"
+    static let uotPath = "uotPath"
 }
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
@@ -26,6 +27,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let acceptInsecureTLS: Bool
         let transportMode: String
         let wsPath: String
+        let uotPath: String
     }
 
     private var vpnConnection: NWConnection?
@@ -35,7 +37,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var startCompleted = false
     private var runtimeStopped = false
     private var useWebSocket = false
+    private var useUoT = false
+    private var uotFramingEnabled = false
     private var wsRecvBuffer = Data()
+    private var uotRecvBuffer = Data()
+    private var uotTCPLeftover = Data()
     private var backendConfig: BackendConfig?
     private var reconnectWorkItem: DispatchWorkItem?
     private var heartbeatWorkItem: DispatchWorkItem?
@@ -77,7 +83,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             token: token,
             acceptInsecureTLS: (cfg[TunnelConfigKey.acceptInsecureTLS] as? NSNumber)?.boolValue ?? false,
             transportMode: (cfg[TunnelConfigKey.transport] as? String)?.lowercased() ?? "ws",
-            wsPath: Self.normalizedWSPath((cfg[TunnelConfigKey.wsPath] as? String) ?? "/ws")
+            wsPath: Self.normalizedWSPath((cfg[TunnelConfigKey.wsPath] as? String) ?? "/ws"),
+            uotPath: Self.normalizedUoTPath((cfg[TunnelConfigKey.uotPath] as? String) ?? "/dns-query")
         )
         backendConfig = config
         isClosing = false
@@ -103,7 +110,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func connectBackend(config: BackendConfig, isInitial: Bool, completionHandler: @escaping (Error?) -> Void) {
         activeTransport = transportCandidates[min(transportIndex, max(0, transportCandidates.count - 1))]
         useWebSocket = (activeTransport == "ws")
+        useUoT = (activeTransport == "uot")
+        uotFramingEnabled = false
         wsRecvBuffer.removeAll(keepingCapacity: true)
+        uotRecvBuffer.removeAll(keepingCapacity: true)
+        uotTCPLeftover.removeAll(keepingCapacity: true)
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
         resetSendQueue(cancelPending: true)
@@ -145,7 +156,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             endpoint = .hostPort(host: .init(config.host), port: .init(integerLiteral: config.port))
         }
 
-        JVPNDebugLog.tunnel("backend connect host=\(config.host) port=\(config.port) transport=\(activeTransport) mode=\(config.transportMode)")
+        JVPNDebugLog.tunnel("backend connect host=\(config.host) port=\(config.port) transport=\(activeTransport) mode=\(config.transportMode) uotPath=\(config.uotPath)")
         let conn = NWConnection(to: endpoint, using: params)
         startLock.lock()
         currentConnectionID &+= 1
@@ -163,7 +174,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             case .ready:
                 self.reconnectAttempt = 0
                 self.ioQueue.async {
-                    self.runSession(conn: conn, connID: connID, token: config.token, completionHandler: completionHandler)
+                    if self.useUoT {
+                        self.performUoTUpgrade(conn: conn, config: config) { err in
+                            guard self.isActiveConnection(connID) else { return }
+                            if let err {
+                                if self.startCompleted {
+                                    self.scheduleReconnectIfNeeded(reason: err)
+                                } else {
+                                    self.finishStart(err, completionHandler)
+                                }
+                                return
+                            }
+                            self.uotFramingEnabled = true
+                            self.runSession(conn: conn, connID: connID, token: config.token, completionHandler: completionHandler)
+                        }
+                    } else {
+                        self.runSession(conn: conn, connID: connID, token: config.token, completionHandler: completionHandler)
+                    }
                 }
             case .failed(let err):
                 JVPNDebugLog.tunnel("NWConnection failed: \(String(describing: err))")
@@ -457,7 +484,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         var out = Data()
         // Keep WS messages small — large batched frames drop under speedtest load.
-        let batchLimit = useWebSocket ? 8 * 1024 : 64 * 1024
+        let batchLimit: Int
+        if useWebSocket {
+            batchLimit = 8 * 1024
+        } else if useUoT {
+            batchLimit = 32 * 1024
+        } else {
+            batchLimit = 64 * 1024
+        }
         out.reserveCapacity(min(batchLimit, 64 * 1024))
         var i = index
         while i < packets.count {
@@ -571,6 +605,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func sendRaw(conn: NWConnection, data: Data, done: @escaping (Error?) -> Void) {
+        if useUoT && uotFramingEnabled {
+            let records = Self.uotRecords(from: data)
+            guard !records.isEmpty else {
+                done(nil)
+                return
+            }
+            for (i, rec) in records.enumerated() {
+                let isLast = i == records.count - 1
+                sendQueue.append((conn, rec, isLast ? done : { _ in }))
+            }
+            pumpSendQueue()
+            return
+        }
         sendQueue.append((conn, data, done))
         pumpSendQueue()
     }
@@ -611,15 +658,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func receiveExact(conn: NWConnection, count: Int, done: @escaping (Data?, Error?) -> Void) {
-        if !useWebSocket {
-            conn.receive(minimumIncompleteLength: count, maximumLength: count) { data, _, isComplete, error in
+        if useUoT && uotFramingEnabled {
+            fillUoTBuffer(conn: conn, minBytes: count) { [weak self] error in
+                guard let self else { return }
                 if let error { done(nil, error); return }
-                if isComplete {
+                if self.uotRecvBuffer.count < count {
                     done(nil, NSError(domain: "JVPN", code: 3, userInfo: [NSLocalizedDescriptionKey: "Connection closed"]))
                     return
                 }
-                done(data, nil)
+                let out = self.uotRecvBuffer.prefix(count)
+                self.uotRecvBuffer.removeFirst(count)
+                done(Data(out), nil)
             }
+            return
+        }
+        if !useWebSocket {
+            receiveTCP(conn: conn, count: count, done: done)
             return
         }
         fillWSBuffer(conn: conn, minBytes: count) { [weak self] error in
@@ -653,6 +707,121 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 self.wsRecvBuffer.append(data)
             }
             self.fillWSBuffer(conn: conn, minBytes: minBytes, done: done)
+        }
+    }
+
+    private func performUoTUpgrade(conn: NWConnection, config: BackendConfig, completion: @escaping (Error?) -> Void) {
+        let hostHeader = config.port == 443 ? config.host : "\(config.host):\(config.port)"
+        let req = "POST \(config.uotPath) HTTP/1.1\r\nHost: \(hostHeader)\r\nContent-Type: application/dns-message\r\nAccept: application/dns-message\r\nCache-Control: no-cache\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n"
+        JVPNDebugLog.tunnel("uot HTTP upgrade path=\(config.uotPath)")
+        conn.send(content: Data(req.utf8), completion: .contentProcessed { [weak self] err in
+            guard let self else { return }
+            if let err { completion(err); return }
+            self.readHTTPHeaders(conn: conn, completion: completion)
+        })
+    }
+
+    private func readHTTPHeaders(conn: NWConnection, completion: @escaping (Error?) -> Void) {
+        var acc = Data()
+        func pump() {
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, isComplete, error in
+                guard let self else { return }
+                if let error {
+                    completion(error)
+                    return
+                }
+                if let data {
+                    acc.append(data)
+                }
+                if let range = acc.range(of: Data("\r\n\r\n".utf8)) {
+                    let head = acc[..<range.lowerBound]
+                    let rest = acc[range.upperBound...]
+                    let firstCR = head.firstIndex(of: 13)
+                    let statusBytes = firstCR.map { Data(head[..<$0]) } ?? Data(head)
+                    let firstLine = String(data: statusBytes, encoding: .utf8) ?? ""
+                    if !firstLine.contains(" 200 ") {
+                        completion(NSError(domain: "JVPN", code: 14, userInfo: [NSLocalizedDescriptionKey: "UDP-over-TCP upgrade failed"]))
+                        return
+                    }
+                    if !rest.isEmpty {
+                        self.uotTCPLeftover.append(Data(rest))
+                    }
+                    completion(nil)
+                    return
+                }
+                if isComplete {
+                    completion(NSError(domain: "JVPN", code: 3, userInfo: [NSLocalizedDescriptionKey: "Connection closed"]))
+                    return
+                }
+                if acc.count > 16384 {
+                    completion(NSError(domain: "JVPN", code: 14, userInfo: [NSLocalizedDescriptionKey: "UDP-over-TCP headers too large"]))
+                    return
+                }
+                pump()
+            }
+        }
+        pump()
+    }
+
+    private func receiveTCP(conn: NWConnection, count: Int, done: @escaping (Data?, Error?) -> Void) {
+        if uotTCPLeftover.count >= count {
+            let out = uotTCPLeftover.prefix(count)
+            uotTCPLeftover.removeFirst(count)
+            done(Data(out), nil)
+            return
+        }
+        if !uotTCPLeftover.isEmpty {
+            let have = uotTCPLeftover
+            uotTCPLeftover.removeAll(keepingCapacity: true)
+            let still = count - have.count
+            conn.receive(minimumIncompleteLength: still, maximumLength: still) { data, _, isComplete, error in
+                if let error { done(nil, error); return }
+                var out = have
+                if let data { out.append(data) }
+                if isComplete && out.count < count {
+                    done(nil, NSError(domain: "JVPN", code: 3, userInfo: [NSLocalizedDescriptionKey: "Connection closed"]))
+                    return
+                }
+                done(out, nil)
+            }
+            return
+        }
+        conn.receive(minimumIncompleteLength: count, maximumLength: count) { data, _, isComplete, error in
+            if let error { done(nil, error); return }
+            if isComplete {
+                done(nil, NSError(domain: "JVPN", code: 3, userInfo: [NSLocalizedDescriptionKey: "Connection closed"]))
+                return
+            }
+            done(data, nil)
+        }
+    }
+
+    private func fillUoTBuffer(conn: NWConnection, minBytes: Int, done: @escaping (Error?) -> Void) {
+        if uotRecvBuffer.count >= minBytes {
+            done(nil)
+            return
+        }
+        receiveTCP(conn: conn, count: 2) { [weak self] lenData, error in
+            guard let self else { return }
+            if let error { done(error); return }
+            guard let lenData, lenData.count == 2 else {
+                done(NSError(domain: "JVPN", code: 3, userInfo: [NSLocalizedDescriptionKey: "Connection closed"]))
+                return
+            }
+            let n = Int(lenData[0]) << 8 | Int(lenData[1])
+            if n <= 0 || n > 65535 {
+                done(NSError(domain: "JVPN", code: 15, userInfo: [NSLocalizedDescriptionKey: "Invalid UDP-over-TCP record"]))
+                return
+            }
+            self.receiveTCP(conn: conn, count: n) { payload, error in
+                if let error { done(error); return }
+                guard let payload, payload.count == n else {
+                    done(NSError(domain: "JVPN", code: 3, userInfo: [NSLocalizedDescriptionKey: "Connection closed"]))
+                    return
+                }
+                self.uotRecvBuffer.append(payload)
+                self.fillUoTBuffer(conn: conn, minBytes: minBytes, done: done)
+            }
         }
     }
 
@@ -724,11 +893,36 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return p
     }
 
+    private static func normalizedUoTPath(_ raw: String) -> String {
+        var p = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty { p = "/dns-query" }
+        if !p.hasPrefix("/") { p = "/" + p }
+        return p
+    }
+
+    private static func uotRecords(from data: Data) -> [Data] {
+        guard !data.isEmpty else { return [] }
+        var out: [Data] = []
+        var offset = 0
+        while offset < data.count {
+            let n = min(65535, data.count - offset)
+            var rec = Data(count: 2)
+            rec[0] = UInt8((n >> 8) & 0xff)
+            rec[1] = UInt8(n & 0xff)
+            rec.append(data.subdata(in: offset..<(offset + n)))
+            out.append(rec)
+            offset += n
+        }
+        return out
+    }
+
     private static func resolveTransportCandidates(_ mode: String, preferred: String?) -> [String] {
         let base: [String]
         switch mode {
         case "tcp":
             base = ["tcp", "ws"]
+        case "uot":
+            base = ["uot"]
         case "auto":
             base = ["ws", "tcp"]
         case "ws":
@@ -736,7 +930,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         default:
             base = ["ws", "tcp"]
         }
-        guard let preferred, (preferred == "ws" || preferred == "tcp"), base.contains(preferred) else {
+        guard let preferred, (preferred == "ws" || preferred == "tcp" || preferred == "uot"), base.contains(preferred) else {
             return base
         }
         var out = [preferred]
@@ -794,7 +988,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private static func savePreferredTransport(_ transport: String, host: String, port: UInt16) {
-        guard transport == "ws" || transport == "tcp" else { return }
+        guard transport == "ws" || transport == "tcp" || transport == "uot" else { return }
         UserDefaults.standard.set(transport, forKey: preferredTransportKey(host: host, port: port))
     }
 
