@@ -3,6 +3,7 @@
 //  JVPN
 //
 
+import NetworkExtension
 import SwiftUI
 
 struct ExperimentalView: View {
