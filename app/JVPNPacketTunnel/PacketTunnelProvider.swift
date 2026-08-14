@@ -54,6 +54,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var activeTransport = "ws"
     private var currentConnectionID: UInt64 = 0
     private var reconnectScheduled = false
+    private var sessionReady = false
+    private var packetReaderArmed = false
+    private var drainingOutbound = false
+    private var outboundPackets: [Data] = []
+    private let outboundLimit = 1024
     private var lastAppliedClientIP: String?
     private var lastAppliedPrefixLen: Int?
     private var lastSentTelemetryRevision = -1
@@ -96,6 +101,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         stickyTransportFailures = 0
         reconnectScheduled = false
         runtimeStopped = false
+        sessionReady = false
+        packetReaderArmed = false
+        drainingOutbound = false
+        outboundPackets.removeAll(keepingCapacity: true)
         lastSentTelemetryRevision = -1
         startLock.unlock()
         resetSendQueue(cancelPending: true)
@@ -115,6 +124,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         wsRecvBuffer.removeAll(keepingCapacity: true)
         uotRecvBuffer.removeAll(keepingCapacity: true)
         uotTCPLeftover.removeAll(keepingCapacity: true)
+        sessionReady = false
+        drainingOutbound = false
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
         resetSendQueue(cancelPending: true)
@@ -226,19 +237,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if shouldReconnect {
             runtimeStopped = true
             reconnectScheduled = true
+            sessionReady = false
         }
         startLock.unlock()
         guard shouldReconnect, let cfg = backendConfig else { return }
 
         cancelHeartbeatAndTelemetry()
         resetSendQueue(cancelPending: true)
+        outboundPackets.removeAll(keepingCapacity: true)
+        drainingOutbound = false
         vpnConnection?.cancel()
         vpnConnection = nil
         reconnectWorkItem?.cancel()
         reconnectAttempt += 1
         // Prefer sticky transport; flip only after sustained failures (not every few attempts).
         stickyTransportFailures += 1
-        if stickyTransportFailures >= transportFlipAfterFailures, transportCandidates.count > 1 {
+        if stickyTransportFailures >= transportFlipAfterFailures, transportCandidates.count > 1, !useUoT {
             transportIndex = (transportIndex + 1) % transportCandidates.count
             stickyTransportFailures = 0
             JVPNDebugLog.tunnel("transport failover -> \(transportCandidates[transportIndex]) after sustained failures")
@@ -314,9 +328,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             self.startLock.lock()
             self.lastAppliedClientIP = clientIP
             self.lastAppliedPrefixLen = prefixLen
+            self.sessionReady = true
             self.startLock.unlock()
             self.recvLoop(conn: conn, connID: connID)
-            self.readPacketsLoop(conn: conn, connID: connID)
+            self.ensurePacketReader()
+            self.drainOutbound()
             self.sendTelemetryIfNeeded(conn: conn, connID: connID, force: true)
             self.scheduleHeartbeat(conn: conn, connID: connID)
             self.scheduleTelemetryPoll(conn: conn, connID: connID)
@@ -412,6 +428,98 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         telemetryPollWorkItem = nil
     }
 
+    private func ensurePacketReader() {
+        startLock.lock()
+        let alreadyArmed = packetReaderArmed
+        if !alreadyArmed {
+            packetReaderArmed = true
+        }
+        startLock.unlock()
+        guard !alreadyArmed else { return }
+        pumpPacketReader()
+    }
+
+    /// Re-arm immediately. Waiting on TCP send before the next readPackets
+    /// lets the system tear down the packet tunnel after a speedtest.
+    private func pumpPacketReader() {
+        if isClosing { return }
+        packetFlow.readPackets { [weak self] packets, protocols in
+            guard let self else { return }
+            if self.isClosing { return }
+            var v4: [Data] = []
+            v4.reserveCapacity(packets.count)
+            for (i, packet) in packets.enumerated() {
+                let p = i < protocols.count ? protocols[i] : NSNumber(value: AF_INET as Int32)
+                if p.intValue == AF_INET { v4.append(packet) }
+            }
+            self.ioQueue.async {
+                self.enqueueOutbound(v4)
+            }
+            self.pumpPacketReader()
+        }
+    }
+
+    private func enqueueOutbound(_ packets: [Data]) {
+        guard !isClosing else { return }
+        for packet in packets {
+            if outboundPackets.count >= outboundLimit {
+                outboundPackets.removeFirst()
+            }
+            outboundPackets.append(packet)
+        }
+        drainOutbound()
+    }
+
+    private func drainOutbound() {
+        guard !drainingOutbound, !isClosing else { return }
+        startLock.lock()
+        let ready = sessionReady && !runtimeStopped
+        let connID = currentConnectionID
+        startLock.unlock()
+        guard ready, let conn = vpnConnection, isActiveConnection(connID) else { return }
+        guard !outboundPackets.isEmpty else { return }
+
+        let batchLimit: Int
+        if useWebSocket {
+            batchLimit = 8 * 1024
+        } else if useUoT {
+            batchLimit = 16 * 1024
+        } else {
+            batchLimit = 64 * 1024
+        }
+        var out = Data()
+        out.reserveCapacity(min(batchLimit, 64 * 1024))
+        var count = 0
+        while !outboundPackets.isEmpty {
+            let framed = Self.frame(outboundPackets[0])
+            if !out.isEmpty && out.count + framed.count > batchLimit {
+                break
+            }
+            if useWebSocket && !out.isEmpty && count >= 4 {
+                break
+            }
+            outboundPackets.removeFirst()
+            out.append(framed)
+            count += 1
+        }
+        guard !out.isEmpty else { return }
+
+        drainingOutbound = true
+        sendRaw(conn: conn, data: out) { [weak self] err in
+            guard let self else { return }
+            self.drainingOutbound = false
+            guard self.isActiveConnection(connID) else { return }
+            if let err {
+                if !self.isClosing {
+                    JVPNDebugLog.tunnel("send frame: \(String(describing: err))")
+                    self.scheduleReconnectIfNeeded(reason: err)
+                }
+                return
+            }
+            self.drainOutbound()
+        }
+    }
+
     private func recvLoop(conn: NWConnection, connID: UInt64) {
         if isClosing { return }
         receiveExact(conn: conn, count: 4) { [weak self] header, err in
@@ -458,65 +566,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
                 self.recvLoop(conn: conn, connID: connID)
             }
-        }
-    }
-
-    private func readPacketsLoop(conn: NWConnection, connID: UInt64) {
-        if isClosing { return }
-        packetFlow.readPackets { [weak self] packets, protocols in
-            guard let self else { return }
-            guard self.isActiveConnection(connID) else { return }
-            if self.isClosing { return }
-            var v4: [Data] = []
-            for (i, packet) in packets.enumerated() {
-                let p = i < protocols.count ? protocols[i] : NSNumber(value: AF_INET as Int32)
-                if p.intValue == AF_INET { v4.append(packet) }
-            }
-            self.sendBatch(conn: conn, connID: connID, packets: v4, index: 0)
-        }
-    }
-
-    private func sendBatch(conn: NWConnection, connID: UInt64, packets: [Data], index: Int) {
-        if isClosing { return }
-        if index >= packets.count {
-            readPacketsLoop(conn: conn, connID: connID)
-            return
-        }
-        var out = Data()
-        // Keep WS messages small — large batched frames drop under speedtest load.
-        let batchLimit: Int
-        if useWebSocket {
-            batchLimit = 8 * 1024
-        } else if useUoT {
-            batchLimit = 32 * 1024
-        } else {
-            batchLimit = 64 * 1024
-        }
-        out.reserveCapacity(min(batchLimit, 64 * 1024))
-        var i = index
-        while i < packets.count {
-            let framed = Self.frame(packets[i])
-            if !out.isEmpty && out.count + framed.count > batchLimit {
-                break
-            }
-            // WebSocket: at most a few packets per message to limit latency spikes.
-            if useWebSocket && !out.isEmpty && i - index >= 4 {
-                break
-            }
-            out.append(framed)
-            i += 1
-        }
-        sendRaw(conn: conn, data: out) { [weak self] err in
-            guard let self else { return }
-            guard self.isActiveConnection(connID) else { return }
-            if let err {
-                if !self.isClosing {
-                    JVPNDebugLog.tunnel("send frame: \(String(describing: err))")
-                    self.scheduleReconnectIfNeeded(reason: err)
-                }
-                return
-            }
-            self.sendBatch(conn: conn, connID: connID, packets: packets, index: i)
         }
     }
 
@@ -831,9 +880,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         currentConnectionID &+= 1
         reconnectScheduled = false
         startCompleted = false
+        sessionReady = false
+        packetReaderArmed = false
         lastAppliedClientIP = nil
         lastAppliedPrefixLen = nil
         startLock.unlock()
+        outboundPackets.removeAll(keepingCapacity: true)
+        drainingOutbound = false
         cancelHeartbeatAndTelemetry()
         resetSendQueue(cancelPending: true)
         reconnectWorkItem?.cancel()

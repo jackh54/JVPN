@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/jackh54/jvpn-server/internal/bootstrap"
 	"github.com/jackh54/jvpn-server/internal/dashboard"
@@ -19,22 +20,34 @@ import (
 )
 
 func tuneTCP(conn net.Conn) {
-	var tcp *net.TCPConn
-	switch c := conn.(type) {
-	case *net.TCPConn:
-		tcp = c
-	case *tls.Conn:
-		if nc := c.NetConn(); nc != nil {
-			if t, ok := nc.(*net.TCPConn); ok {
-				tcp = t
-			}
-		}
-	}
+	tcp := underlyingTCP(conn)
 	if tcp == nil {
 		return
 	}
 	_ = tcp.SetReadBuffer(4 * 1024 * 1024)
 	_ = tcp.SetWriteBuffer(4 * 1024 * 1024)
+	_ = tcp.SetKeepAlive(true)
+	_ = tcp.SetKeepAlivePeriod(20 * time.Second)
+}
+
+func underlyingTCP(conn net.Conn) *net.TCPConn {
+	for i := 0; i < 8 && conn != nil; i++ {
+		switch c := conn.(type) {
+		case *net.TCPConn:
+			return c
+		case *tls.Conn:
+			conn = c.NetConn()
+		case interface{ NetConn() net.Conn }:
+			next := c.NetConn()
+			if next == nil || next == conn {
+				return nil
+			}
+			conn = next
+		default:
+			return nil
+		}
+	}
+	return nil
 }
 
 func defaultTunName() string {

@@ -174,7 +174,7 @@ sudo nft add rule inet filter input tcp dport 443 accept
    - **IPv4 packet** (normal traffic)
    - **Control** (not IPv4): `0xC0 0x01` + UTF-8 JSON telemetry, or `0xC0 0x02` heartbeat (no body)
 4. Telemetry JSON keys: `client_id`, `device_name`, `model`, `os`, `battery_pct`, `charging`, `lat`, `lon`, `updated_at`
-5. Sessions idle out after ~90s without any framed traffic (IP, telemetry, or heartbeat).
+5. Sessions idle out after ~3 minutes without any framed traffic (IP, telemetry, or heartbeat).
 
 ## Security notes
 
