@@ -46,8 +46,9 @@ func defaultTunName() string {
 
 func main() {
 	listen := flag.String("listen", ":443", "TLS listen address (host:port)")
-	transport := flag.String("transport", "tcp", "transport mode: tcp (default) or ws (websocket over TLS)")
+	transport := flag.String("transport", "tcp", "transport mode: tcp (default) or ws (websocket over TLS; also serves UDP-over-TCP)")
 	wsPath := flag.String("ws-path", "/ws", "when -transport=ws, HTTP path to upgrade websocket tunnel")
+	uotPath := flag.String("uot-path", "/dns-query", "when -transport=ws, HTTP path for experimental UDP-over-TCP (DoH-style) tunnel")
 	dataDir := flag.String("data-dir", "jvpn-data", "when using auto TLS/token, store files here (created on first run)")
 	certFile := flag.String("cert", "", "TLS certificate PEM (omit with key and token-file to auto-generate under -data-dir)")
 	keyFile := flag.String("key", "", "TLS private key PEM")
@@ -147,11 +148,12 @@ func main() {
 		log.Printf("jvpn-server listening on %s (TLS 1.3+, transport=tcp)", *listen)
 	case "ws":
 		path := server.ParseWSPath(*wsPath)
-		ln, err = server.ListenWebSocketTLS(*listen, tlsCfg, path)
+		uot := server.ParseUoTPath(*uotPath)
+		ln, err = server.ListenWebSocketTLS(*listen, tlsCfg, path, uot)
 		if err != nil {
 			log.Fatalf("listen ws: %v", err)
 		}
-		log.Printf("jvpn-server listening on %s (TLS 1.3+, transport=ws, path=%s)", *listen, path)
+		log.Printf("jvpn-server listening on %s (TLS 1.3+, transport=ws, path=%s, uot=%s)", *listen, path, uot)
 	default:
 		log.Fatalf("invalid -transport=%q (expected tcp or ws)", *transport)
 	}

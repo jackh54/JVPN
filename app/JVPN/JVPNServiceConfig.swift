@@ -44,6 +44,9 @@ enum JVPNServiceConfig {
     /// Websocket upgrade path used when `transport == "ws"` / auto.
     static let webSocketPath = "/ws"
 
+    /// HTTP path for experimental UDP-over-TCP (DoH-style POST) on TLS 443.
+    static let uotPath = "/dns-query"
+
     static var isPlaceholderConfiguration: Bool {
         sharedToken == "REPLACE_WITH_YOUR_SERVER_TOKEN" || sharedToken.isEmpty
     }
