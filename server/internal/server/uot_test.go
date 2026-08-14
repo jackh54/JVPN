@@ -51,6 +51,33 @@ func TestUoTRecordRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUoTRecordSingleWrite(t *testing.T) {
+	var w writeCounter
+	if err := writeUoTRecord(&w, []byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if w.writes != 1 {
+		t.Fatalf("writes=%d want 1 (split writes desync UDP-over-TCP under load)", w.writes)
+	}
+	got, err := readUoTRecord(&w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "abc" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+type writeCounter struct {
+	bytes.Buffer
+	writes int
+}
+
+func (w *writeCounter) Write(p []byte) (int, error) {
+	w.writes++
+	return w.Buffer.Write(p)
+}
+
 func TestUoTRecordRejectsEmpty(t *testing.T) {
 	if err := writeUoTRecord(io.Discard, nil); err == nil {
 		t.Fatal("expected error")

@@ -19,7 +19,7 @@ import (
 )
 
 // IdleTimeout closes a session if no framed traffic (IP, telemetry, or heartbeat) arrives.
-const IdleTimeout = 90 * time.Second
+const IdleTimeout = 3 * time.Minute
 
 // Session ties one authenticated client to a tunnel IP and downstream queue.
 type Session struct {
@@ -111,7 +111,7 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 		connectedAt: time.Now().UTC(),
 		hub:         hub,
 		deviceInfo:  sanitizeDeviceInfo(hello.Device),
-		downstream:  make(chan []byte, 4096),
+		downstream:  make(chan []byte, 8192),
 	}
 	hub.Register(clientIP, s)
 	defer hub.Unregister(clientIP)
@@ -276,12 +276,12 @@ func (s *Session) tunToTLS(c net.Conn) {
 			}
 		}
 	SEND:
-		_ = c.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		// No write deadline: a congested window must block (and drop queued
+		// packets in DispatchToClient) instead of killing the session.
 		if _, err := c.Write(batch.Bytes()); err != nil {
 			log.Printf("write frame: %v", err)
 			return
 		}
-		_ = c.SetWriteDeadline(time.Time{})
 	}
 }
 

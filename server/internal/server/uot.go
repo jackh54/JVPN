@@ -36,17 +36,19 @@ func newUoTConn(c net.Conn) *uotConn {
 	return &uotConn{Conn: c}
 }
 
+func (c *uotConn) NetConn() net.Conn {
+	return c.Conn
+}
+
 func writeUoTRecord(w io.Writer, payload []byte) error {
 	n := len(payload)
 	if n == 0 || n > uotMaxRecord {
 		return fmt.Errorf("uot record length %d", n)
 	}
-	var hdr [2]byte
-	binary.BigEndian.PutUint16(hdr[:], uint16(n))
-	if _, err := w.Write(hdr[:]); err != nil {
-		return err
-	}
-	_, err := w.Write(payload)
+	buf := make([]byte, 2+n)
+	binary.BigEndian.PutUint16(buf[:2], uint16(n))
+	copy(buf[2:], payload)
+	_, err := w.Write(buf)
 	return err
 }
 
@@ -140,6 +142,9 @@ func handleUoT(ln *wsListener, w http.ResponseWriter, r *http.Request) {
 	conn, buf, err := hj.Hijack()
 	if err != nil {
 		return
+	}
+	if buf != nil && buf.Writer != nil {
+		_ = buf.Writer.Flush()
 	}
 	if _, err := conn.Write([]byte(uotHTTPOKHeaders)); err != nil {
 		_ = conn.Close()
