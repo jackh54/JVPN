@@ -124,8 +124,9 @@ func (l *wsListener) Close() error {
 
 func (l *wsListener) Addr() net.Addr { return l.addr }
 
-// ListenWebSocketTLS exposes websocket upgrades on path and returns a net.Listener of upgraded stream conns.
-func ListenWebSocketTLS(addr string, tlsCfg *tls.Config, path string) (net.Listener, error) {
+// ListenWebSocketTLS exposes websocket upgrades on wsPath and optional UDP-over-TCP
+// (DoH-style POST) on uotPath. Returns a net.Listener of tunnel stream conns.
+func ListenWebSocketTLS(addr string, tlsCfg *tls.Config, wsPath, uotPath string) (net.Listener, error) {
 	baseLn, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -150,7 +151,7 @@ func ListenWebSocketTLS(addr string, tlsCfg *tls.Config, path string) (net.Liste
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(wsPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -165,6 +166,11 @@ func ListenWebSocketTLS(addr string, tlsCfg *tls.Config, path string) (net.Liste
 		case ln.conns <- newWSConn(c):
 		}
 	})
+	if uotPath != "" && uotPath != wsPath {
+		mux.HandleFunc(uotPath, func(w http.ResponseWriter, r *http.Request) {
+			handleUoT(ln, w, r)
+		})
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, "not found\n")

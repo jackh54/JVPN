@@ -10,11 +10,13 @@ struct ContentView: View {
     // Shared singletons must not be owned by @StateObject (lifetime/identity glitches on macOS 26).
     @ObservedObject private var vpn = VPNManager.shared
     @ObservedObject private var telemetry = DeviceTelemetryManager.shared
+    @ObservedObject private var experimental = JVPNExperimentalSettings.shared
     @State private var message: String = ""
     @State private var isWorking = false
     @State private var connectPressed = false
     @State private var pulseScale: CGFloat = 1.0
     @State private var ringRotation: Double = 0
+    @State private var showExperimental = false
 
     private let accent = Color(red: 0.24, green: 0.87, blue: 0.60)
     private let danger = Color(red: 0.95, green: 0.35, blue: 0.42)
@@ -48,6 +50,9 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showExperimental) {
+            ExperimentalView()
+        }
         .task {
             VPNNotificationManager.requestAuthorization()
             await vpn.load()
@@ -106,8 +111,30 @@ struct ContentView: View {
 
             Spacer()
 
+            experimentalEntry
+
             statusPill
         }
+    }
+
+    private var experimentalEntry: some View {
+        let active = experimental.isExperimentalTransport
+        return Image(systemName: "flask.fill")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(active ? accent : Color.white.opacity(0.45))
+            .padding(8)
+            .background(
+                Circle()
+                    .fill(active ? accent.opacity(0.14) : Color.white.opacity(0.06))
+                    .overlay(
+                        Circle().stroke(active ? accent.opacity(0.35) : Color.white.opacity(0.08), lineWidth: 1)
+                    )
+            )
+            .contentShape(Circle())
+            .onTapGesture { showExperimental = true }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("Experimental")
+            .accessibilityValue(active ? "UDP over TCP enabled" : "Standard")
     }
 
     private var statusPill: some View {
@@ -189,7 +216,7 @@ struct ContentView: View {
         HStack(spacing: 0) {
             infoCell(icon: "lock.fill", label: "Encrypted", value: "TLS 1.3")
             divider
-            infoCell(icon: "network", label: "Tunnel", value: "Active")
+            infoCell(icon: "network", label: "Tunnel", value: experimental.isExperimentalTransport ? "UoT 443" : "Active")
             divider
             infoCell(icon: "bolt.fill", label: "Always On", value: "On")
         }
@@ -372,6 +399,9 @@ struct ContentView: View {
         case .reasserting:
             return "Restoring your secure connection…"
         default:
+            if experimental.isExperimentalTransport {
+                return "Experimental UDP-over-TCP 443 is enabled."
+            }
             return "Tap the button below to encrypt your connection."
         }
     }

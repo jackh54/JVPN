@@ -6,6 +6,8 @@ Linux VPN head-end for the JVPN iOS client. It accepts **TLS 1.3** on TCP **443*
 
 For DPI-heavy networks, it also supports **WebSocket over TLS** transport (`-transport ws`) while keeping the same authenticated JVPN framing inside the tunnel.
 
+When `-transport ws`, the same TLS :443 listener also accepts an experimental **UDP-over-TCP** tunnel on `POST /dns-query` (`-uot-path`). After a `200` response, datagrams are `uint16` length-prefixed records (DNS-over-HTTPS camouflage). Existing WebSocket clients are unchanged.
+
 ## Requirements
 
 - Linux with TUN support
@@ -121,8 +123,8 @@ sudo ./jvpn-server \
 ```bash
 sudo ./jvpn-server -listen :443 -tun-name jvpn0 -setup-tun -setup-nat
 
-# Obfuscated transport over HTTPS-like websocket framing:
-sudo ./jvpn-server -listen :443 -transport ws -ws-path /ws -tun-name jvpn0 -setup-tun -setup-nat
+# Obfuscated transport over HTTPS-like websocket framing (also serves UDP-over-TCP on POST /dns-query):
+sudo ./jvpn-server -listen :443 -transport ws -ws-path /ws -uot-path /dns-query -tun-name jvpn0 -setup-tun -setup-nat
 ```
 
 `-setup-tun` runs:

@@ -277,12 +277,12 @@ func (s *Session) tunToTLS(c net.Conn) {
 			}
 		}
 	SEND:
-		_ = c.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		// No write deadline: a congested window must block (and drop queued
+		// packets in DispatchToClient) instead of killing the session.
 		if _, err := c.Write(batch.Bytes()); err != nil {
 			log.Printf("write frame: %v", err)
 			return
 		}
-		_ = c.SetWriteDeadline(time.Time{})
 	}
 }
 

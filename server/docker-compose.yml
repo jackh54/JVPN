@@ -35,6 +35,8 @@ services:
       - ${JVPN_TRANSPORT:-ws}
       - -ws-path
       - ${JVPN_WS_PATH:-/ws}
+      - -uot-path
+      - ${JVPN_UOT_PATH:-/dns-query}
       - -cert
       - ${JVPN_CERT:-/etc/letsencrypt/live/vpn.blakout.dev/fullchain.pem}
       - -key
