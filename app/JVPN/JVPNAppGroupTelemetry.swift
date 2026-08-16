@@ -60,8 +60,16 @@ enum JVPNAppGroupTelemetry {
         d.set(os, forKey: Key.os)
         if let batteryPct { d.set(batteryPct, forKey: Key.batteryPct) }
         if let charging { d.set(charging, forKey: Key.charging) }
-        if let lat { d.set(lat, forKey: Key.lat) }
-        if let lon { d.set(lon, forKey: Key.lon) }
+        if let lat {
+            d.set(lat, forKey: Key.lat)
+        } else {
+            d.removeObject(forKey: Key.lat)
+        }
+        if let lon {
+            d.set(lon, forKey: Key.lon)
+        } else {
+            d.removeObject(forKey: Key.lon)
+        }
         d.set(String(Int(Date().timeIntervalSince1970)), forKey: Key.updatedAt)
         let rev = d.integer(forKey: Key.revision) &+ 1
         d.set(rev, forKey: Key.revision)

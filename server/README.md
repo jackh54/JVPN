@@ -2,7 +2,7 @@
 
 Go module `github.com/jackh54/jvpn-server` (lives under `server/` in the JVPN monorepo).
 
-Linux VPN head-end for the JVPN iOS client. It accepts **TLS 1.3** on TCP **443**, authenticates a **pre-shared token**, assigns a **10.8.0.0/24** address, and bridges IPv4 between clients and a **TUN** interface using a simple length-prefixed IP frame protocol.
+Linux VPN head-end for the JVPN iOS client. It accepts **TLS 1.3** on TCP **443**, authenticates a **pre-shared token**, assigns a **10.8.0.0/16** address, and bridges IPv4 between clients and a **TUN** interface using a simple length-prefixed IP frame protocol.
 
 For DPI-heavy networks, it also supports **WebSocket over TLS** transport (`-transport ws`) while keeping the same authenticated JVPN framing inside the tunnel.
 
@@ -127,12 +127,12 @@ sudo ./jvpn-server -listen :443 -transport ws -ws-path /ws -tun-name jvpn0 -setu
 
 `-setup-tun` runs:
 
-- `ip addr add 10.8.0.1/24 dev jvpn0`
+- `ip addr add 10.8.0.1/16 dev jvpn0`
 - `ip link set jvpn0 up`
 
-If you prefer to configure the interface yourself, omit `-setup-tun` and set `10.8.0.1/24` on the TUN device the server prints.
+If you prefer to configure the interface yourself, omit `-setup-tun` and set `10.8.0.1/16` on the TUN device the server prints.
 
-**`-setup-nat` (Linux, optional but needed for internet):** sets `net.ipv4.ip_forward=1`, detects the default WAN with `ip route get 8.8.8.8`, then adds **iptables** rules: MASQUERADE for `10.8.0.0/24` out that interface, plus FORWARD accept between `jvpn0` and WAN (and established return). Omit it if you manage **nftables/iptables yourself** (see below). Idempotent: existing rules are not duplicated.
+**`-setup-nat` (Linux, optional but needed for internet):** sets `net.ipv4.ip_forward=1`, detects the default WAN with `ip route get 8.8.8.8`, then adds **iptables** rules: MASQUERADE for `10.8.0.0/16` out that interface, plus FORWARD accept between `jvpn0` and WAN (and established return). Omit it if you manage **nftables/iptables yourself** (see below). Idempotent: existing rules are not duplicated.
 
 ## Routing and NAT
 
@@ -147,13 +147,13 @@ Assume WAN is `eth0` and TUN is `jvpn0`. Example **nftables** masquerade:
 ```bash
 sudo nft add table ip jvpn
 sudo nft add chain ip jvpn postrouting { type nat hook postrouting priority 100 \; }
-sudo nft add rule ip jvpn postrouting oifname "eth0" ip saddr 10.8.0.0/24 masquerade
+sudo nft add rule ip jvpn postrouting oifname "eth0" ip saddr 10.8.0.0/16 masquerade
 ```
 
 Replace `eth0` with your uplink interface. Equivalent **iptables**:
 
 ```bash
-sudo iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
+sudo iptables -t nat -A POSTROUTING -s 10.8.0.0/16 -o eth0 -j MASQUERADE
 ```
 
 ## Firewall
@@ -172,7 +172,7 @@ sudo nft add rule inet filter input tcp dport 443 accept
    - **IPv4 packet** (normal traffic)
    - **Control** (not IPv4): `0xC0 0x01` + UTF-8 JSON telemetry, or `0xC0 0x02` heartbeat (no body)
 4. Telemetry JSON keys: `client_id`, `device_name`, `model`, `os`, `battery_pct`, `charging`, `lat`, `lon`, `updated_at`
-5. Sessions idle out after ~90s without any framed traffic (IP, telemetry, or heartbeat).
+5. Sessions idle out after 5 minutes without any framed traffic (IP, telemetry, or heartbeat).
 
 ## Security notes
 

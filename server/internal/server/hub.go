@@ -35,7 +35,7 @@ type Hub struct {
 }
 
 type resumeEntry struct {
-	lastOctet byte
+	ip        net.IP
 	expiresAt time.Time
 }
 
@@ -122,12 +122,10 @@ func (h *Hub) Unregister(clientIP net.IP) {
 		if dns := h.dnsBySession[s.id]; len(dns) > 0 {
 			snap.DNSRecent = append([]string(nil), dns...)
 		}
-		if cid := s.clientID(); cid != "" {
-			if ip4 := s.clientIP.To4(); ip4 != nil {
-				h.resumeByClient[cid] = resumeEntry{
-					lastOctet: ip4[3],
-					expiresAt: time.Now().UTC().Add(20 * time.Minute),
-				}
+		if cid := s.clientID(); cid != "" && s.clientIP != nil {
+			h.resumeByClient[cid] = resumeEntry{
+				ip:        append(net.IP(nil), s.clientIP.To4()...),
+				expiresAt: time.Now().UTC().Add(24 * time.Hour),
 			}
 		}
 		delete(h.dnsBySession, s.id)
@@ -154,9 +152,10 @@ func (h *Hub) DispatchToClient(packet []byte) {
 	if s == nil {
 		return
 	}
+	pkt := append([]byte(nil), packet...)
 	select {
-	case s.downstream <- append([]byte(nil), packet...):
-		n := uint64(len(packet))
+	case s.downstream <- pkt:
+		n := uint64(len(pkt))
 		s.downstreamBytes.Add(n)
 		s.downstreamPkts.Add(1)
 		h.AddDownstream(n)
@@ -333,23 +332,26 @@ func (h *Hub) IsClientBlocked(remoteAddr string, device map[string]string) (bool
 	return false, ""
 }
 
-func (h *Hub) PreferredLastOctetForClient(clientID string) (byte, bool) {
+func (h *Hub) PreferredIPForClient(clientID string) (net.IP, bool) {
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
-		return 0, false
+		return nil, false
 	}
 	now := time.Now().UTC()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	entry, ok := h.resumeByClient[clientID]
 	if !ok {
-		return 0, false
+		return nil, false
 	}
 	if now.After(entry.expiresAt) {
 		delete(h.resumeByClient, clientID)
-		return 0, false
+		return nil, false
 	}
-	return entry.lastOctet, true
+	if entry.ip == nil {
+		return nil, false
+	}
+	return append(net.IP(nil), entry.ip...), true
 }
 
 func (h *Hub) IssueResumeToken(clientID string) string {
@@ -366,7 +368,7 @@ func (h *Hub) IssueResumeToken(clientID string) string {
 	defer h.mu.Unlock()
 	h.resumeTokenMap[tok] = resumeTokenEntry{
 		clientID:  clientID,
-		expiresAt: time.Now().UTC().Add(30 * time.Minute),
+		expiresAt: time.Now().UTC().Add(24 * time.Hour),
 	}
 	return tok
 }

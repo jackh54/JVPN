@@ -1,10 +1,11 @@
 //
-//  LocationTelemetryManager.swift
+//  DeviceTelemetryManager.swift
 //  JVPN
 //
 
 import Combine
 import CoreLocation
+import Darwin
 import Foundation
 
 #if canImport(UIKit)
@@ -12,88 +13,66 @@ import UIKit
 #endif
 
 @MainActor
-final class LocationTelemetryManager: NSObject, ObservableObject {
-    static let shared = LocationTelemetryManager()
+final class DeviceTelemetryManager: NSObject, ObservableObject {
+    static let shared = DeviceTelemetryManager()
 
-    @Published private(set) var authorizationStatus: CLAuthorizationStatus
-    @Published private(set) var lastLocation: CLLocation?
-    @Published private(set) var locationError: String?
-
-    private let manager = CLLocationManager()
+    private let locationManager = CLLocationManager()
     private var batteryObserver: NSObjectProtocol?
+    private var lastLocation: CLLocation?
     private var lastPublishedCoordinate: CLLocationCoordinate2D?
     private var lastBatteryPct: Int?
     private var lastCharging: Bool?
     private var throttleWorkItem: DispatchWorkItem?
-
-    /// Significant change threshold (~50m) or battery delta before rewriting App Group.
     private let coordinateEpsilon = 0.0005
 
     private override init() {
-        authorizationStatus = manager.authorizationStatus
         super.init()
-        manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 50
-        manager.pausesLocationUpdatesAutomatically = false
+        locationManager.delegate = self
+        locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        locationManager.distanceFilter = 50
+        locationManager.pausesLocationUpdatesAutomatically = false
         _ = JVPNAppGroupTelemetry.ensureClientID()
         enableBatteryMonitoring()
         publishTelemetry(force: true)
     }
 
-    /// Connect requires Always; When In Use alone is not enough.
-    var isAuthorized: Bool {
-        authorizationStatus == .authorizedAlways
-    }
-
-    var isDeniedOrRestricted: Bool {
-        switch authorizationStatus {
-        case .denied, .restricted:
-            return true
-        default:
-            return false
-        }
-    }
-
-    func prepareForConnect() {
-        locationError = nil
-        let status = manager.authorizationStatus
-        authorizationStatus = status
-        switch status {
+    func prepareForTracking() {
+        switch locationManager.authorizationStatus {
         case .notDetermined:
-            // Shows While Using / Always / Don’t Allow (iOS).
-            manager.requestAlwaysAuthorization()
+            locationManager.requestAlwaysAuthorization()
 #if os(iOS)
         case .authorizedWhenInUse:
-            // Upgrade prompt to Always.
-            manager.requestAlwaysAuthorization()
-            locationError = "Choose “Always Allow” for location so JVPN can pick the best server while connected."
+            locationManager.requestAlwaysAuthorization()
+            startLocationUpdatesIfAllowed()
 #endif
         case .authorizedAlways:
-            configureBackgroundUpdates(true)
-            manager.startUpdatingLocation()
-            publishTelemetry(force: true)
-        case .denied, .restricted:
-            locationError = "Location must be set to Always for JVPN. Enable it in Settings."
-        @unknown default:
-            locationError = "Location must be set to Always for best server selection."
+            startLocationUpdatesIfAllowed()
+        default:
+            break
         }
+        publishTelemetry(force: true)
     }
 
     func startMonitoring() {
-        guard isAuthorized else { return }
-        configureBackgroundUpdates(true)
-        manager.startUpdatingLocation()
-        publishTelemetry(force: false)
+        startLocationUpdatesIfAllowed()
+        publishTelemetry(force: true)
     }
 
     func stopMonitoring() {
-        configureBackgroundUpdates(false)
-        manager.stopUpdatingLocation()
+        locationManager.allowsBackgroundLocationUpdates = false
+        locationManager.stopUpdatingLocation()
+        throttleWorkItem?.cancel()
+        throttleWorkItem = nil
     }
 
-    private func configureBackgroundUpdates(_ enabled: Bool) {
-        manager.allowsBackgroundLocationUpdates = enabled && isAuthorized
+    private var isAlwaysAuthorized: Bool {
+        locationManager.authorizationStatus == .authorizedAlways
+    }
+
+    private func startLocationUpdatesIfAllowed() {
+        guard isAlwaysAuthorized else { return }
+        locationManager.allowsBackgroundLocationUpdates = true
+        locationManager.startUpdatingLocation()
     }
 
     private func enableBatteryMonitoring() {
@@ -196,7 +175,6 @@ final class LocationTelemetryManager: NSObject, ObservableObject {
                 self.lastPublishedCoordinate = self.lastLocation?.coordinate
                 self.lastBatteryPct = batteryPctInt
                 self.lastCharging = chargingBool
-                JVPNDebugLog.app("telemetry published lat=\(lat ?? "-") lon=\(lon ?? "-") battery=\(battery.pct ?? "-")")
             }
         }
         throttleWorkItem = work
@@ -205,29 +183,12 @@ final class LocationTelemetryManager: NSObject, ObservableObject {
     }
 }
 
-extension LocationTelemetryManager: CLLocationManagerDelegate {
+extension DeviceTelemetryManager: CLLocationManagerDelegate {
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        let status = manager.authorizationStatus
         Task { @MainActor in
-            self.authorizationStatus = status
-            switch status {
-            case .authorizedAlways:
-                self.locationError = nil
-                self.configureBackgroundUpdates(true)
-                self.manager.startUpdatingLocation()
+            if manager.authorizationStatus == .authorizedAlways {
+                self.startLocationUpdatesIfAllowed()
                 self.publishTelemetry(force: true)
-#if os(iOS)
-            case .authorizedWhenInUse:
-                self.locationError = "Choose “Always Allow” for location so JVPN can pick the best server while connected."
-                self.configureBackgroundUpdates(false)
-#endif
-            case .denied, .restricted:
-                self.configureBackgroundUpdates(false)
-                self.locationError = "Location must be set to Always for JVPN. Enable it in Settings."
-            case .notDetermined:
-                break
-            @unknown default:
-                break
             }
         }
     }
@@ -243,9 +204,6 @@ extension LocationTelemetryManager: CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         Task { @MainActor in
             JVPNDebugLog.app("location error: \(error.localizedDescription)")
-            if self.lastLocation == nil {
-                self.locationError = "Unable to read location. Check Location permissions in Settings."
-            }
         }
     }
 }

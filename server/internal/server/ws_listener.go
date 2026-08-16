@@ -135,14 +135,14 @@ func ListenWebSocketTLS(addr string, tlsCfg *tls.Config, path string) (net.Liste
 	ctx, cancel := context.WithCancel(context.Background())
 	ln := &wsListener{
 		addr:   tlsLn.Addr(),
-		conns:  make(chan net.Conn, 64),
+		conns:  make(chan net.Conn, 1024),
 		closed: make(chan struct{}),
 		stop:   cancel,
 	}
 
 	upgrader := websocket.Upgrader{
-		ReadBufferSize:    256 * 1024,
-		WriteBufferSize:   256 * 1024,
+		ReadBufferSize:    1024 * 1024,
+		WriteBufferSize:   1024 * 1024,
 		EnableCompression: false,
 		CheckOrigin: func(_ *http.Request) bool {
 			return true

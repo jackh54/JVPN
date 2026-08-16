@@ -53,8 +53,8 @@ func main() {
 	keyFile := flag.String("key", "", "TLS private key PEM")
 	tokenFile := flag.String("token-file", "", "shared secret file, single line (omit with cert and key to auto-generate)")
 	tunName := flag.String("tun-name", defaultTunName(), "TUN interface name (Linux: e.g. jvpn0; macOS: e.g. utun9)")
-	setup := flag.Bool("setup-tun", false, "assign 10.8.0.1/24 on the TUN (Linux: ip command; macOS: ifconfig; requires root)")
-	setupNAT := flag.Bool("setup-nat", false, "Linux only: ip_forward=1 + iptables MASQUERADE/FORWARD for 10.8.0.0/24 (root; WAN from `ip route get 8.8.8.8`; use with -setup-tun)")
+	setup := flag.Bool("setup-tun", false, "assign 10.8.0.1/16 on the TUN (Linux: ip command; macOS: ifconfig; requires root)")
+	setupNAT := flag.Bool("setup-nat", false, "Linux only: ip_forward=1 + iptables MASQUERADE/FORWARD for 10.8.0.0/16 (root; WAN from `ip route get 8.8.8.8`; use with -setup-tun)")
 	adminListen := flag.String("admin-listen", "", "optional admin dashboard bind address (recommended 127.0.0.1:18080 and access via SSH port-forward)")
 	adminUser := flag.String("admin-user", "", "admin dashboard basic-auth username (required when -admin-listen is set)")
 	adminPass := flag.String("admin-pass", "", "admin dashboard basic-auth password (required when -admin-listen is set)")
@@ -124,6 +124,7 @@ func main() {
 	hub := server.NewHub()
 	hub.SetTUNReady(true)
 	pool := session.NewIPPool()
+	tunOut := server.NewSerializedTUN(ifce, 8192)
 	go hub.RunTUNReader(ifce)
 	if *adminListen != "" {
 		if *adminUser == "" || *adminPass == "" {
@@ -164,7 +165,7 @@ func main() {
 		}
 		go func(conn net.Conn) {
 			tuneTCP(conn)
-			server.ServeConn(conn, hub, pool, token, ifce)
+			server.ServeConn(conn, hub, pool, token, tunOut)
 		}(c)
 	}
 }

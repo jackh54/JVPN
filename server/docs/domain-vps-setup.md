@@ -173,7 +173,7 @@ From your local machine:
 Expected:
 
 ```text
-OK: authenticated, assigned 10.8.0.x/24, transport=ws, vpn.example.com:443
+OK: authenticated, assigned 10.8.0.x/16, transport=ws, vpn.example.com:443
 ```
 
 TLS sanity check:

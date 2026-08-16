@@ -130,7 +130,12 @@ final class VPNManager: ObservableObject {
             existingProto?.providerBundleIdentifier == tunnelProviderIdentifier &&
             existingProto?.serverAddress == JVPNServiceConfig.serverHost &&
             NSDictionary(dictionary: existingProto?.providerConfiguration ?? [:]).isEqual(to: providerConfiguration)
-        let shouldSave = !configMatches || !m.isEnabled || m.isOnDemandEnabled || !(m.onDemandRules?.isEmpty ?? true)
+        let needsAlwaysOn =
+            existingProto == nil ||
+            !(existingProto?.includeAllNetworks ?? false) ||
+            !(existingProto?.excludeLocalNetworks ?? false) ||
+            (existingProto?.disconnectOnSleep ?? true)
+        let shouldSave = !configMatches || !m.isEnabled || needsAlwaysOn
 
         if !shouldSave {
             manager = m
@@ -139,23 +144,52 @@ final class VPNManager: ObservableObject {
             return
         }
 
-        let proto = NETunnelProviderProtocol()
-        proto.providerBundleIdentifier = tunnelProviderIdentifier
-        proto.serverAddress = JVPNServiceConfig.serverHost
-        proto.providerConfiguration = providerConfiguration
+        let proto = existingProto ?? NETunnelProviderProtocol()
+        applyAlwaysOnProtocol(proto, providerConfiguration: providerConfiguration)
         m.protocolConfiguration = proto
         m.localizedDescription = "JVPN"
         m.isEnabled = true
-        // Keep on-demand disabled so the tunnel only starts from explicit user action.
-        // This avoids system-driven connect/reconnect loops when a profile is saved at launch.
-        m.onDemandRules = []
-        m.isOnDemandEnabled = false
         JVPNDebugLog.app(
             "installConfiguration host=\(JVPNServiceConfig.serverHost) port=\(JVPNServiceConfig.serverPort) tokenLen=\(JVPNServiceConfig.sharedToken.count) acceptInsecureTLS=\(JVPNServiceConfig.acceptSelfSignedTLS) transport=\(JVPNServiceConfig.transport) wsPath=\(JVPNServiceConfig.webSocketPath)"
         )
-        try await m.saveToPreferences()
+        do {
+            try await m.saveToPreferences()
+        } catch {
+            proto.includeAllNetworks = false
+            m.protocolConfiguration = proto
+            try await m.saveToPreferences()
+            JVPNDebugLog.app("installConfiguration saved without includeAllNetworks: \(error.localizedDescription)")
+        }
         manager = try await reloadCurrentManagerFromPreferences()
         JVPNDebugLog.app("installConfiguration saveToPreferences done")
+    }
+
+    private func applyAlwaysOnProtocol(_ proto: NETunnelProviderProtocol, providerConfiguration: [String: NSObject]) {
+        proto.providerBundleIdentifier = tunnelProviderIdentifier
+        proto.serverAddress = JVPNServiceConfig.serverHost
+        proto.providerConfiguration = providerConfiguration
+        proto.disconnectOnSleep = false
+        proto.includeAllNetworks = true
+        proto.excludeLocalNetworks = true
+        if #available(iOS 16.0, macOS 13.0, *) {
+            proto.excludeAPNs = true
+        }
+    }
+
+    private func setOnDemandEnabled(_ enabled: Bool) async throws {
+        let m = try await reloadCurrentManagerFromPreferences()
+        m.isEnabled = true
+        if enabled {
+            let rule = NEOnDemandRuleConnect()
+            rule.interfaceTypeMatch = .any
+            m.onDemandRules = [rule]
+            m.isOnDemandEnabled = true
+        } else {
+            m.isOnDemandEnabled = false
+            m.onDemandRules = []
+        }
+        try await m.saveToPreferences()
+        manager = try await reloadCurrentManagerFromPreferences()
     }
 
     func connect() async throws {
@@ -166,10 +200,18 @@ final class VPNManager: ObservableObject {
             JVPNDebugLog.app("connect() abort: no manager")
             throw VPNManagerError.noConfiguration
         }
+        try await setOnDemandEnabled(true)
         let m = try await reloadCurrentManagerFromPreferences()
         guard m.connection as? NETunnelProviderSession != nil else {
             JVPNDebugLog.app("connect() abort: connection is not NETunnelProviderSession")
             throw VPNManagerError.noConfiguration
+        }
+        switch m.connection.status {
+        case .connected, .connecting, .reasserting:
+            JVPNDebugLog.app("connect() already active status=\(Self.neStatusLabel(m.connection.status))")
+            return
+        default:
+            break
         }
         try m.connection.startVPNTunnel()
         JVPNDebugLog.app("connect() startVPNTunnel() returned; status=\(Self.neStatusLabel(m.connection.status))")
@@ -215,6 +257,18 @@ final class VPNManager: ObservableObject {
                 self.lastObservedStatus = current
                 if current != self.status {
                     self.status = current
+                }
+                if previous != current {
+                    switch current {
+                    case .connected, .reasserting:
+                        VPNNotificationManager.notifyStatus(current)
+                    case .disconnected, .invalid:
+                        if previous == .connected || previous == .reasserting || previous == .disconnecting {
+                            VPNNotificationManager.notifyStatus(.disconnected)
+                        }
+                    default:
+                        break
+                    }
                 }
                 self.reportTransitionIfFailed(previous: previous, current: current)
             }

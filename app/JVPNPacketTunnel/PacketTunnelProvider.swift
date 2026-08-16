@@ -51,6 +51,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var lastAppliedClientIP: String?
     private var lastAppliedPrefixLen: Int?
     private var lastSentTelemetryRevision = -1
+    private var pathMonitor: NWPathMonitor?
+    private var waitingWorkItem: DispatchWorkItem?
+    private var didNotifyReconnect = false
     /// NWConnection allows only one outstanding send; heartbeat/telemetry must not race the data path.
     private var sendQueue: [(conn: NWConnection, data: Data, done: (Error?) -> Void)] = []
     private var sendInFlight = false
@@ -90,9 +93,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         reconnectScheduled = false
         runtimeStopped = false
         lastSentTelemetryRevision = -1
+        didNotifyReconnect = false
         startLock.unlock()
         resetSendQueue(cancelPending: true)
         cancelHeartbeatAndTelemetry()
+        startPathMonitor()
         let preferred = Self.loadPreferredTransport(host: config.host, port: config.port)
         transportCandidates = Self.resolveTransportCandidates(config.transportMode, preferred: preferred)
         transportIndex = 0
@@ -106,14 +111,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         wsRecvBuffer.removeAll(keepingCapacity: true)
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
+        cancelWaitingWatchdog()
         resetSendQueue(cancelPending: true)
         cancelHeartbeatAndTelemetry()
 
         let tcp = NWProtocolTCP.Options()
         tcp.enableKeepalive = true
-        tcp.keepaliveIdle = 20
+        tcp.keepaliveIdle = 10
         tcp.keepaliveInterval = 5
-        tcp.keepaliveCount = 3
+        tcp.keepaliveCount = 4
         tcp.noDelay = true
         let tls = NWProtocolTLS.Options()
         let sec = tls.securityProtocolOptions
@@ -162,6 +168,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             switch state {
             case .ready:
                 self.reconnectAttempt = 0
+                self.cancelWaitingWatchdog()
                 self.ioQueue.async {
                     self.runSession(conn: conn, connID: connID, token: config.token, completionHandler: completionHandler)
                 }
@@ -172,6 +179,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 } else {
                     self.finishStart(err, completionHandler)
                 }
+            case .waiting(let err):
+                JVPNDebugLog.tunnel("NWConnection waiting: \(String(describing: err))")
+                self.armWaitingWatchdog(connID: connID, reason: err)
             case .cancelled:
                 // Intentional cancel during reconnect already armed a retry — don't nest another.
                 self.startLock.lock()
@@ -184,7 +194,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     let err = NSError(domain: "JVPN", code: 8, userInfo: [NSLocalizedDescriptionKey: "Cancelled"])
                     self.finishStart(err, completionHandler)
                 }
-            case .setup, .waiting, .preparing:
+            case .setup, .preparing:
                 break
             @unknown default:
                 break
@@ -203,6 +213,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         startLock.unlock()
         guard shouldReconnect, let cfg = backendConfig else { return }
 
+        reasserting = true
+        if !didNotifyReconnect {
+            didNotifyReconnect = true
+            TunnelNotify.reconnecting()
+        }
+        cancelWaitingWatchdog()
         cancelHeartbeatAndTelemetry()
         resetSendQueue(cancelPending: true)
         vpnConnection?.cancel()
@@ -244,6 +260,61 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return base + jitter
     }
 
+    private func armWaitingWatchdog(connID: UInt64, reason: Error) {
+        cancelWaitingWatchdog()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.isActiveConnection(connID), !self.isClosing else { return }
+            if self.startCompleted {
+                self.scheduleReconnectIfNeeded(reason: reason)
+            }
+        }
+        waitingWorkItem = work
+        ioQueue.asyncAfter(deadline: .now() + 8, execute: work)
+    }
+
+    private func cancelWaitingWatchdog() {
+        waitingWorkItem?.cancel()
+        waitingWorkItem = nil
+    }
+
+    private func startPathMonitor() {
+        stopPathMonitor()
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            self.ioQueue.async {
+                guard self.startCompleted, !self.isClosing else { return }
+                if path.status == .satisfied, self.vpnConnection == nil {
+                    let err = NSError(domain: "JVPN", code: 14, userInfo: [NSLocalizedDescriptionKey: "Network path restored"])
+                    self.scheduleReconnectIfNeeded(reason: err)
+                }
+            }
+        }
+        pathMonitor = monitor
+        monitor.start(queue: ioQueue)
+    }
+
+    private func stopPathMonitor() {
+        pathMonitor?.cancel()
+        pathMonitor = nil
+    }
+
+    override func sleep(completionHandler: @escaping () -> Void) {
+        completionHandler()
+    }
+
+    override func wake() {
+        ioQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.startCompleted, !self.isClosing else { return }
+            if self.vpnConnection == nil {
+                let err = NSError(domain: "JVPN", code: 15, userInfo: [NSLocalizedDescriptionKey: "Wake"])
+                self.scheduleReconnectIfNeeded(reason: err)
+            }
+        }
+    }
+
     private func runSession(conn: NWConnection, connID: UInt64, token: String, completionHandler: @escaping (Error?) -> Void) {
         guard let cfg = backendConfig else {
             failDuringBringUp(NSError(domain: "JVPN", code: 21, userInfo: [NSLocalizedDescriptionKey: "Missing backend config"]), completionHandler)
@@ -276,7 +347,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let ipv4 = NEIPv4Settings(addresses: [clientIP], subnetMasks: [Self.netmask(forPrefixLength: prefixLen)])
         ipv4.includedRoutes = [NEIPv4Route.default()]
         settings.ipv4Settings = ipv4
-        settings.mtu = NSNumber(value: 1400)
+        settings.mtu = NSNumber(value: 1420)
         let dns = NEDNSSettings(servers: ["1.1.1.1", "8.8.8.8"])
         dns.matchDomains = [""]
         settings.dnsSettings = dns
@@ -293,6 +364,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             self.sendTelemetryIfNeeded(conn: conn, connID: connID, force: true)
             self.scheduleHeartbeat(conn: conn, connID: connID)
             self.scheduleTelemetryPoll(conn: conn, connID: connID)
+            self.reasserting = false
+            if self.didNotifyReconnect {
+                self.didNotifyReconnect = false
+                TunnelNotify.connected()
+            }
             self.finishStart(nil, completionHandler)
         }
 
@@ -457,7 +533,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         var out = Data()
         // Keep WS messages small — large batched frames drop under speedtest load.
-        let batchLimit = useWebSocket ? 8 * 1024 : 64 * 1024
+        let batchLimit = useWebSocket ? 16 * 1024 : 64 * 1024
         out.reserveCapacity(min(batchLimit, 64 * 1024))
         var i = index
         while i < packets.count {
@@ -466,7 +542,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 break
             }
             // WebSocket: at most a few packets per message to limit latency spikes.
-            if useWebSocket && !out.isEmpty && i - index >= 4 {
+            if useWebSocket && !out.isEmpty && i - index >= 8 {
                 break
             }
             out.append(framed)
@@ -669,6 +745,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         resetSendQueue(cancelPending: true)
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
+        stopPathMonitor()
+        cancelWaitingWatchdog()
+        reasserting = false
         vpnConnection?.cancel()
         vpnConnection = nil
         completionHandler()

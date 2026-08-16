@@ -8,7 +8,8 @@ import (
 )
 
 func configureTUN(name string) error {
-	cmd := exec.Command("ip", "addr", "add", "10.8.0.1/24", "dev", name)
+	_ = exec.Command("ip", "addr", "flush", "dev", name).Run()
+	cmd := exec.Command("ip", "addr", "add", "10.8.0.1/16", "dev", name)
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 	if err := cmd.Run(); err != nil {

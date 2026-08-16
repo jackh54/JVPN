@@ -11,13 +11,13 @@
 	<key>JVPNSharedToken</key>
 	<string>$(JVPN_SHARED_TOKEN)</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>JVPN needs your location for best server selection.</string>
+	<string>JVPN uses your location to choose the best server while connected.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>JVPN needs Always location access for best server selection while the VPN is connected.</string>
+	<string>JVPN uses your location to choose the best server while the VPN is connected.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
-	<string>JVPN needs Always location access for best server selection while the VPN is connected.</string>
+	<string>JVPN uses your location to choose the best server while the VPN is connected.</string>
 	<key>NSLocationUsageDescription</key>
-	<string>JVPN needs your location for best server selection.</string>
+	<string>JVPN uses your location to choose the best server while connected.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>

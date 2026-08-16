@@ -15,8 +15,8 @@ enum JVPNControlProtocol {
     static let typeTelemetry: UInt8 = 0x01
     static let typeHeartbeat: UInt8 = 0x02
 
-    static let heartbeatInterval: TimeInterval = 27
-    static let telemetryPollInterval: TimeInterval = 12
+    static let heartbeatInterval: TimeInterval = 15
+    static let telemetryPollInterval: TimeInterval = 30
 
     static func isControlPayload(_ payload: Data) -> Bool {
         guard let first = payload.first else { return false }

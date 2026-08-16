@@ -19,7 +19,7 @@ import (
 )
 
 // IdleTimeout closes a session if no framed traffic (IP, telemetry, or heartbeat) arrives.
-const IdleTimeout = 90 * time.Second
+const IdleTimeout = 5 * time.Minute
 
 // Session ties one authenticated client to a tunnel IP and downstream queue.
 type Session struct {
@@ -75,8 +75,8 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 		}
 	}
 	var clientIP net.IP
-	if last, ok := hub.PreferredLastOctetForClient(clientID); ok {
-		clientIP = pool.AllocatePreferred(last)
+	if pref, ok := hub.PreferredIPForClient(clientID); ok {
+		clientIP = pool.AllocatePreferred(pref)
 		if clientIP != nil {
 			log.Printf("resumed client ip for %s -> %s", clientID, clientIP.String())
 		}
@@ -92,11 +92,12 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 	}
 	defer pool.Release(clientIP)
 
+	prefix := byte(ipool.PrefixLength)
 	var hsErr error
 	if hello.Version >= protocol.V3 {
-		hsErr = protocol.WriteServerHandshakeV3(c, protocol.StatusOK, clientIP, 24, hub.IssueResumeToken(clientID))
+		hsErr = protocol.WriteServerHandshakeV3(c, protocol.StatusOK, clientIP, prefix, hub.IssueResumeToken(clientID))
 	} else {
-		hsErr = protocol.WriteServerHandshake(c, protocol.StatusOK, clientIP, 24)
+		hsErr = protocol.WriteServerHandshake(c, protocol.StatusOK, clientIP, prefix)
 	}
 	if hsErr != nil {
 		log.Printf("handshake write: %v", hsErr)
@@ -111,7 +112,7 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 		connectedAt: time.Now().UTC(),
 		hub:         hub,
 		deviceInfo:  sanitizeDeviceInfo(hello.Device),
-		downstream:  make(chan []byte, 4096),
+		downstream:  make(chan []byte, 16384),
 	}
 	hub.Register(clientIP, s)
 	defer hub.Unregister(clientIP)
@@ -260,7 +261,7 @@ func (s *Session) applyTelemetry(body []byte) {
 }
 
 func (s *Session) tunToTLS(c net.Conn) {
-	const maxBatchBytes = 32 * 1024
+	const maxBatchBytes = 64 * 1024
 	for pkt := range s.downstream {
 		var batch bytes.Buffer
 		_ = protocol.WriteFrame(&batch, pkt)

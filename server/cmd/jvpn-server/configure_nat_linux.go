@@ -11,7 +11,7 @@ import (
 )
 
 // configureNAT enables IPv4 forwarding and adds iptables MASQUERADE + FORWARD rules
-// so clients on 10.8.0.0/24 can reach the internet. WAN interface is detected via "ip route get".
+// so clients on 10.8.0.0/16 can reach the internet. WAN interface is detected via "ip route get".
 func configureNAT(tun string) error {
 	wan, err := defaultWANInterface()
 	if err != nil {
@@ -22,8 +22,8 @@ func configureNAT(tun string) error {
 	}
 	log.Printf("setup-nat: tun=%s wan=%s (MASQUERADE + FORWARD)", tun, wan)
 
-	if err := iptablesTryAppend([]string{"-t", "nat", "-C", "POSTROUTING", "-s", "10.8.0.0/24", "-o", wan, "-j", "MASQUERADE"},
-		[]string{"-t", "nat", "-A", "POSTROUTING", "-s", "10.8.0.0/24", "-o", wan, "-j", "MASQUERADE"}); err != nil {
+	if err := iptablesTryAppend([]string{"-t", "nat", "-C", "POSTROUTING", "-s", "10.8.0.0/16", "-o", wan, "-j", "MASQUERADE"},
+		[]string{"-t", "nat", "-A", "POSTROUTING", "-s", "10.8.0.0/16", "-o", wan, "-j", "MASQUERADE"}); err != nil {
 		return fmt.Errorf("iptables nat: %w", err)
 	}
 	if err := iptablesTryAppend([]string{"-C", "FORWARD", "-i", tun, "-o", wan, "-j", "ACCEPT"},

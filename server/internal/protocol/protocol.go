@@ -242,7 +242,7 @@ func ReadClientHandshake(r io.Reader) (hello ClientHello, err error) {
 	return hello, nil
 }
 
-// WriteServerHandshake responds with status and, on success, assigned client IPv4 and /24 prefix.
+// WriteServerHandshake responds with status and, on success, assigned client IPv4 and prefix.
 func WriteServerHandshake(w io.Writer, status byte, clientIP net.IP, prefixLen byte) error {
 	if status != StatusOK {
 		_, err := w.Write([]byte{status})

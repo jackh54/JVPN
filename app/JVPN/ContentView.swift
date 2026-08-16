@@ -3,14 +3,13 @@
 //  JVPN
 //
 
-import CoreLocation
 import NetworkExtension
 import SwiftUI
 
 struct ContentView: View {
     // Shared singletons must not be owned by @StateObject (lifetime/identity glitches on macOS 26).
     @ObservedObject private var vpn = VPNManager.shared
-    @ObservedObject private var location = LocationTelemetryManager.shared
+    @ObservedObject private var telemetry = DeviceTelemetryManager.shared
     @State private var message: String = ""
     @State private var isWorking = false
     @State private var connectPressed = false
@@ -50,11 +49,9 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         .task {
+            VPNNotificationManager.requestAuthorization()
             await vpn.load()
-            location.prepareForConnect()
-            if location.isAuthorized {
-                location.startMonitoring()
-            }
+            telemetry.prepareForTracking()
             updateProtectionAnimations(isProtected)
         }
         .onChange(of: isProtected) { _, protected in
@@ -190,11 +187,11 @@ struct ContentView: View {
 
     private var connectionInfoCard: some View {
         HStack(spacing: 0) {
-            infoCell(icon: "lock.fill", label: "Encrypted", value: "AES-256")
+            infoCell(icon: "lock.fill", label: "Encrypted", value: "TLS 1.3")
             divider
             infoCell(icon: "network", label: "Tunnel", value: "Active")
             divider
-            infoCell(icon: "location.fill", label: "GPS", value: location.isAuthorized ? "On" : "Off")
+            infoCell(icon: "bolt.fill", label: "Always On", value: "On")
         }
         .padding(.vertical, 14)
         .background(
@@ -361,9 +358,6 @@ struct ContentView: View {
         if JVPNServiceConfig.isPlaceholderConfiguration {
             return "Configuration error — check your server token."
         }
-        if let err = location.locationError, !location.isAuthorized {
-            return err
-        }
         if !message.isEmpty {
             return message
         }
@@ -390,37 +384,16 @@ struct ContentView: View {
         case .connected, .reasserting:
             JVPNDebugLog.app("toggleVPN disconnect (status=\(String(describing: vpn.status)))")
             vpn.disconnect()
+            telemetry.stopMonitoring()
         default:
-            location.prepareForConnect()
-            guard location.isAuthorized else {
-                switch location.authorizationStatus {
-                case .notDetermined:
-                    message = "Allow Location — choose Always — for best server selection."
-#if os(iOS)
-                case .authorizedWhenInUse:
-                    message = "Open Settings and set Location to Always for JVPN."
-#endif
-                default:
-                    message = location.locationError
-                        ?? "Location must be Always for best server selection. Enable it in Settings."
-                }
-                return
-            }
-            if location.lastLocation == nil {
-                location.startMonitoring()
-                try? await Task.sleep(nanoseconds: 800_000_000)
-                if location.lastLocation == nil {
-                    message = "Waiting for a GPS fix. Move near a window and try again."
-                    return
-                }
-            }
-            location.publishTelemetry(force: true)
+            telemetry.prepareForTracking()
+            telemetry.publishTelemetry(force: true)
             isWorking = true
             defer { isWorking = false }
             JVPNDebugLog.app("toggleVPN connect begin")
             do {
                 try await vpn.connect()
-                location.startMonitoring()
+                telemetry.startMonitoring()
                 JVPNDebugLog.app("toggleVPN connect finished without throw")
             } catch {
                 JVPNDebugLog.app("toggleVPN connect error: \(error.localizedDescription)")
