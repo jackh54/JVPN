@@ -539,7 +539,7 @@ const indexHTML = `<!doctype html>
 let prev = null;
 let sessions = {};
 let selectedSessionId = null;
-let es = null;
+let pollTimer = null;
 let map = null;
 let mapMarkers = {};
 let mapFitted = false;
@@ -629,11 +629,11 @@ function rowClosed(x){
 }
 async function kick(id, blockMin){
   if(!id) return;
-  await fetch("/api/disconnect?session_id=" + id + "&block_minutes=" + (blockMin||0), {method:"POST"});
+  await fetch("/api/disconnect?session_id=" + id + "&block_minutes=" + (blockMin||0), {method:"POST", credentials:"same-origin"});
 }
 async function resetAllSessions(){
   if(!window.confirm("Reset all persisted sessions? Every device keeps the same client ID but will get a new session number and tunnel IP on its next reconnect.")) return;
-  const res = await fetch("/api/sessions/reset", {method:"POST"});
+  const res = await fetch("/api/sessions/reset", {method:"POST", credentials:"same-origin"});
   if(!res.ok){
     window.alert("Failed to reset sessions.");
     return;
@@ -647,6 +647,7 @@ async function registerDevice(){
   if(!label) return;
   const res = await fetch("/api/devices", {
     method:"POST",
+    credentials:"same-origin",
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify({label: label, notes: notes})
   });
@@ -659,6 +660,7 @@ async function saveDeviceLabel(clientID, label){
   if(!label) return;
   await fetch("/api/devices", {
     method:"POST",
+    credentials:"same-origin",
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify({client_id: clientID, label: label})
   });
@@ -842,21 +844,28 @@ function setLive(ok, msg){
   document.getElementById("liveDot").className = "dot" + (ok ? "" : " off");
   document.getElementById("liveLabel").textContent = msg;
 }
-function connectSSE(){
-  if(es){ try { es.close(); } catch(_){} }
-  es = new EventSource("/api/stream");
-  es.addEventListener("metrics", function(ev){
-    try { applySnap(JSON.parse(ev.data)); setLive(true, "Live"); }
-    catch(e) { setLive(false, "Parse error"); }
-  });
-  es.onerror = function(){
+let pollTimer = null;
+async function pollMetrics(){
+  try {
+    const res = await fetch("/api/metrics", { credentials: "same-origin", cache: "no-store" });
+    if(res.status === 401) {
+      setLive(false, "Auth required — reload and sign in");
+      return;
+    }
+    if(!res.ok) throw new Error("metrics " + res.status);
+    applySnap(await res.json());
+    setLive(true, "Live");
+  } catch(e) {
     setLive(false, "Reconnecting…");
-    es.close();
-    setTimeout(connectSSE, 2000);
-  };
+  }
+  pollTimer = setTimeout(pollMetrics, 2000);
 }
-initMap();
-connectSSE();
+function startLiveUpdates(){
+  if(pollTimer) clearTimeout(pollTimer);
+  pollMetrics();
+}
+startLiveUpdates();
+try { initMap(); } catch(e) { console.warn("map init failed", e); }
 </script>
 </body>
 </html>
