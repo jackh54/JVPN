@@ -149,9 +149,6 @@ func main() {
 		log.Printf("loaded %d persisted client sessions", len(store.KnownSessions()))
 	}
 	pool := session.NewIPPool()
-	if store := hub.SessionStore(); store != nil {
-		pool.RestoreUsed(store.ReservedIPs())
-	}
 	tunOut := server.NewSerializedTUN(ifce, 8192)
 	go hub.RunTUNReader(ifce)
 	if *adminListen != "" {

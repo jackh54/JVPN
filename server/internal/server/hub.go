@@ -143,15 +143,11 @@ func (h *Hub) TouchDevice(clientID, deviceName, model string) {
 	reg.TouchClient(clientID, deviceName, model)
 }
 
-func (h *Hub) enrichSnapshot(snap SessionSnapshot) SessionSnapshot {
-	h.mu.RLock()
-	reg := h.deviceRegistry
-	h.mu.RUnlock()
-	if reg == nil {
-		snap.DisplayName = displayNameForSession(snap, "")
-		return snap
+func (h *Hub) enrichSnapshot(snap SessionSnapshot, reg *DeviceRegistry) SessionSnapshot {
+	label := ""
+	if reg != nil {
+		label = reg.LabelForClient(snap.ClientID)
 	}
-	label := reg.LabelForClient(snap.ClientID)
 	snap.Label = label
 	snap.DisplayName = displayNameForSession(snap, label)
 	return snap
@@ -203,28 +199,31 @@ func (h *Hub) Register(clientIP net.IP, s *Session) {
 	h.totalSessions.Add(1)
 }
 
-func (h *Hub) Unregister(clientIP net.IP) {
+func (h *Hub) Unregister(s *Session) {
+	if s == nil || s.clientIP == nil {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	k := ipKey(clientIP)
-	s := h.sessions[k]
+	k := ipKey(s.clientIP)
+	if h.sessions[k] != s {
+		return
+	}
 	delete(h.sessions, k)
-	if s != nil {
-		snap := s.Snapshot(time.Now().UTC())
-		if dns := h.dnsBySession[s.id]; len(dns) > 0 {
-			snap.DNSRecent = append([]string(nil), dns...)
+	snap := s.Snapshot(time.Now().UTC())
+	if dns := h.dnsBySession[s.id]; len(dns) > 0 {
+		snap.DNSRecent = append([]string(nil), dns...)
+	}
+	if cid := s.clientID(); cid != "" && s.clientIP != nil {
+		h.resumeByClient[cid] = resumeEntry{
+			ip:        append(net.IP(nil), s.clientIP.To4()...),
+			expiresAt: time.Now().UTC().Add(24 * time.Hour),
 		}
-		if cid := s.clientID(); cid != "" && s.clientIP != nil {
-			h.resumeByClient[cid] = resumeEntry{
-				ip:        append(net.IP(nil), s.clientIP.To4()...),
-				expiresAt: time.Now().UTC().Add(24 * time.Hour),
-			}
-		}
-		delete(h.dnsBySession, s.id)
-		h.recentClosed = append([]SessionSnapshot{snap}, h.recentClosed...)
-		if len(h.recentClosed) > 200 {
-			h.recentClosed = h.recentClosed[:200]
-		}
+	}
+	delete(h.dnsBySession, s.id)
+	h.recentClosed = append([]SessionSnapshot{snap}, h.recentClosed...)
+	if len(h.recentClosed) > 200 {
+		h.recentClosed = h.recentClosed[:200]
 	}
 }
 
@@ -302,19 +301,24 @@ func (h *Hub) DashboardSnapshot() DashboardSnapshot {
 		if dns := h.dnsBySession[s.id]; len(dns) > 0 {
 			snap.DNSRecent = append([]string(nil), dns...)
 		}
-		active = append(active, h.enrichSnapshot(snap))
+		active = append(active, snap)
 	}
-	recent := make([]SessionSnapshot, len(h.recentClosed))
-	for i, snap := range h.recentClosed {
-		recent[i] = h.enrichSnapshot(snap)
-	}
+	recent := append([]SessionSnapshot(nil), h.recentClosed...)
 	reg := h.deviceRegistry
+	store := h.sessionStore
 	h.mu.RUnlock()
+
+	for i := range active {
+		active[i] = h.enrichSnapshot(active[i], reg)
+	}
+	for i := range recent {
+		recent[i] = h.enrichSnapshot(recent[i], reg)
+	}
 
 	var registered []RegisteredDeviceView
 	if reg != nil {
 		registered = reg.ListViews(h.OnlineClientIDs())
-		if store := h.SessionStore(); store != nil {
+		if store != nil {
 			for i := range registered {
 				if registered[i].SessionID != 0 {
 					continue

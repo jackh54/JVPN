@@ -78,7 +78,6 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 	store := hub.SessionStore()
 	var (
 		sessionID      uint64
-		keepIPReserved bool
 		resumedSession bool
 	)
 	if store != nil && clientID != "" {
@@ -91,7 +90,6 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 		}
 		sessionID = binding.SessionID
 		resumedSession = binding.Resumed
-		keepIPReserved = true
 		if deviceInfo := binding.DeviceInfo; len(deviceInfo) > 0 {
 			if hello.Device == nil {
 				hello.Device = map[string]string{}
@@ -125,11 +123,7 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 	if store != nil && clientID != "" {
 		store.AssignIP(clientID, clientIP)
 	}
-	defer func() {
-		if !keepIPReserved {
-			pool.Release(clientIP)
-		}
-	}()
+	defer pool.Release(clientIP)
 
 	prefix := byte(ipool.PrefixLength)
 	var hsErr error
@@ -159,7 +153,7 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 		if store != nil && clientID != "" {
 			store.Touch(clientID, s.deviceInfoSnapshot())
 		}
-		hub.Unregister(clientIP)
+		hub.Unregister(s)
 	}()
 	if resumedSession {
 		log.Printf("client resumed: session=%d client_id=%s remote=%s assigned=%s", s.id, clientID, s.remoteAddr, s.clientIP.String())
@@ -292,7 +286,6 @@ func (s *Session) applyTelemetry(body []byte) {
 		return
 	}
 	s.deviceMu.Lock()
-	defer s.deviceMu.Unlock()
 	if s.deviceInfo == nil {
 		s.deviceInfo = make(map[string]string, 8)
 	}
@@ -337,6 +330,7 @@ func (s *Session) applyTelemetry(body []byte) {
 		s.telemetryAt = time.Now().UTC()
 		s.deviceInfo["updated_at"] = s.telemetryAt.Format(time.RFC3339)
 	}
+	s.deviceMu.Unlock()
 	s.syncDeviceRegistry()
 }
 
