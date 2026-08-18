@@ -844,7 +844,6 @@ function setLive(ok, msg){
   document.getElementById("liveDot").className = "dot" + (ok ? "" : " off");
   document.getElementById("liveLabel").textContent = msg;
 }
-let pollTimer = null;
 async function pollMetrics(){
   try {
     const res = await fetch("/api/metrics", { credentials: "same-origin", cache: "no-store" });
