@@ -90,8 +90,8 @@ struct ExperimentalView: View {
                     Text(mode.title)
                         .font(.system(size: 16, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white)
-                    if mode == .udpOverTCP {
-                        Text("BETA")
+                    if mode == .standard {
+                        Text("FALLBACK")
                             .font(.system(size: 10, weight: .bold, design: .rounded))
                             .tracking(0.6)
                             .foregroundStyle(accent)

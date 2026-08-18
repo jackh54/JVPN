@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/jackh54/jvpn-server/internal/server"
+	"github.com/jackh54/jvpn-server/internal/session"
 )
 
-func Start(listenAddr, username, password string, hub *server.Hub) error {
+func Start(listenAddr, username, password string, hub *server.Hub, pool *session.IPPool) error {
 	if username == "" || password == "" {
 		return fmt.Errorf("dashboard auth requires non-empty username and password")
 	}
@@ -78,6 +79,62 @@ func Start(listenAddr, username, password string, hub *server.Hub) error {
 				}
 			}
 		}
+	}))
+	mux.HandleFunc("/api/devices", withBasicAuth(username, password, func(w http.ResponseWriter, r *http.Request) {
+		reg := hub.DeviceRegistry()
+		if reg == nil {
+			http.Error(w, "device registry unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"devices": reg.ListViews(hub.OnlineClientIDs()),
+			})
+		case http.MethodPost:
+			var body struct {
+				Label    string `json:"label"`
+				Notes    string `json:"notes"`
+				ClientID string `json:"client_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			var (
+				dev server.RegisteredDevice
+				err error
+			)
+			if body.ClientID != "" {
+				dev, err = reg.UpsertClient(body.ClientID, body.Label, body.Notes)
+			} else {
+				dev, err = reg.RegisterPending(body.Label, body.Notes)
+			}
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "device": dev})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+	mux.HandleFunc("/api/sessions/reset", withBasicAuth(username, password, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		disconnected := hub.ResetAllSessions()
+		if pool != nil {
+			pool.Reset()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":           true,
+			"disconnected": disconnected,
+		})
 	}))
 	mux.HandleFunc("/api/disconnect", withBasicAuth(username, password, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -303,6 +360,21 @@ const indexHTML = `<!doctype html>
     }
     .dns-item:last-child { border-bottom:none; }
     .empty-row td { text-align:center; color:var(--muted); padding:28px 12px; cursor:default; }
+    .device-form { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .device-form input {
+      flex:1 1 180px; min-width:140px; padding:10px 12px; border-radius:10px;
+      border:1px solid var(--line2); background:rgba(255,255,255,0.03); color:var(--text); font:inherit;
+    }
+    .device-help { margin:12px 0 0; color:var(--muted); font-size:12.5px; line-height:1.55; }
+    .status-pill {
+      display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
+      font-size:11px; font-weight:600; letter-spacing:0.02em;
+    }
+    .status-pill.online { background:rgba(61,222,154,0.12); color:var(--accent); border:1px solid rgba(61,222,154,0.25); }
+    .status-pill.offline { background:rgba(255,255,255,0.04); color:var(--muted); border:1px solid var(--line); }
+    .status-pill.pending { background:rgba(245,197,66,0.10); color:var(--warn); border:1px solid rgba(245,197,66,0.22); }
+    .device-title { font-weight:600; color:var(--text); }
+    .device-sub { display:block; font-size:11px; color:var(--muted); margin-top:2px; }
     .flash { animation: flash 0.45s ease; }
     @keyframes pulse {
       0% { box-shadow: 0 0 0 0 rgba(61,222,154,0.45); }
@@ -344,6 +416,7 @@ const indexHTML = `<!doctype html>
         <div class="chip"><span class="dot" id="liveDot"></span><span id="liveLabel">Connecting…</span></div>
         <div class="chip" id="tunChip">TUN <strong id="tunLabel">—</strong></div>
         <div class="chip">Uptime <strong id="runtimeChip">—</strong></div>
+        <button class="danger" onclick="resetAllSessions()">Reset all sessions</button>
       </div>
     </header>
 
@@ -384,6 +457,7 @@ const indexHTML = `<!doctype html>
             <div class="kv">
               <div class="k">Session</div><div class="v mono" id="dSession">-</div>
               <div class="k">Client ID</div><div class="v mono" id="dClientId">-</div>
+              <div class="k">User label</div><div class="v"><input id="dLabelInput" type="text" maxlength="64" placeholder="Assign a name" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line2);background:rgba(255,255,255,0.03);color:var(--text);font:inherit;" /><button class="primary" style="margin-top:8px;" onclick="saveSessionLabel()">Save label</button></div>
               <div class="k">Device</div><div class="v" id="dPhone">-</div>
               <div class="k">Battery</div><div class="v" id="dBattery">-</div>
               <div class="k">Location</div><div class="v" id="dLoc">-</div>
@@ -401,6 +475,29 @@ const indexHTML = `<!doctype html>
               <button class="danger" onclick="kick(selectedSessionId,15)">Block 15 min</button>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-bottom:20px;">
+      <div class="panel-hd">
+        <div>
+          <h2>Device roster</h2>
+          <div class="sub">Register users before they connect, then label sessions to identify who is on the VPN</div>
+        </div>
+      </div>
+      <div class="panel-bd">
+        <div class="device-form">
+          <input id="deviceLabel" type="text" placeholder="User name (e.g. Jack)" maxlength="64" />
+          <input id="deviceNotes" type="text" placeholder="Notes (optional)" maxlength="128" />
+          <button class="primary" onclick="registerDevice()">Add device</button>
+        </div>
+        <p class="device-help">Install JVPN on the phone, tap <strong>Connect</strong>, then assign a label from a live session or edit a roster entry once the client ID appears.</p>
+        <div class="table-wrap" style="margin-top:14px;">
+          <table id="registryTbl">
+            <thead><tr><th>User</th><th>Status</th><th>Session</th><th>Phone name</th><th>Model</th><th>Client ID</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -465,14 +562,22 @@ function fmtSec(s){
 function esc(s){
   return String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 }
+function jsStr(s){
+  return JSON.stringify(String(s ?? ""));
+}
 function phoneText(x){
+  if(x.display_name) return esc(x.display_name);
+  const label = x.label || "";
   const name = x.device_name || (x.device_info && x.device_info.device_name) || "";
   const model = x.model || (x.device_info && x.device_info.model) || "";
   const os = x.os || (x.device_info && x.device_info.os) || "";
-  const main = [name || model || "Unknown device", os].filter(Boolean).join(" · ");
+  if(label) return esc([label, name && name !== label ? name : "", model].filter(Boolean).join(" · "));
+  const main = [name || model || "Unknown device", model && model !== name ? model : "", os].filter(Boolean).join(" · ");
   return esc(main);
 }
 function phonePlain(x){
+  if(x.display_name) return x.display_name.split(" · ")[0];
+  if(x.label) return x.label;
   const name = x.device_name || (x.device_info && x.device_info.device_name) || "";
   const model = x.model || (x.device_info && x.device_info.model) || "";
   return name || model || "device";
@@ -525,6 +630,77 @@ function rowClosed(x){
 async function kick(id, blockMin){
   if(!id) return;
   await fetch("/api/disconnect?session_id=" + id + "&block_minutes=" + (blockMin||0), {method:"POST"});
+}
+async function resetAllSessions(){
+  if(!window.confirm("Reset all persisted sessions? Every device keeps the same client ID but will get a new session number and tunnel IP on its next reconnect.")) return;
+  const res = await fetch("/api/sessions/reset", {method:"POST"});
+  if(!res.ok){
+    window.alert("Failed to reset sessions.");
+    return;
+  }
+  selectedSessionId = null;
+  renderDetails();
+}
+async function registerDevice(){
+  const label = document.getElementById("deviceLabel").value.trim();
+  const notes = document.getElementById("deviceNotes").value.trim();
+  if(!label) return;
+  const res = await fetch("/api/devices", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({label: label, notes: notes})
+  });
+  if(res.ok){
+    document.getElementById("deviceLabel").value = "";
+    document.getElementById("deviceNotes").value = "";
+  }
+}
+async function saveDeviceLabel(clientID, label){
+  if(!label) return;
+  await fetch("/api/devices", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({client_id: clientID, label: label})
+  });
+}
+async function saveSessionLabel(){
+  const x = sessions[selectedSessionId];
+  if(!x) return;
+  const clientID = x.client_id || (x.device_info && x.device_info.client_id) || "";
+  const label = document.getElementById("dLabelInput").value.trim();
+  if(!clientID || !label) return;
+  await saveDeviceLabel(clientID, label);
+}
+function registryStatus(dev){
+  if(dev.online) return "<span class=\"status-pill online\">Online</span>";
+  if(!dev.client_id) return "<span class=\"status-pill pending\">Awaiting connect</span>";
+  return "<span class=\"status-pill offline\">Offline</span>";
+}
+function rowRegistry(dev){
+  const clientID = dev.client_id || "";
+  const labelCell = "<span class=\"device-title\">" + esc(dev.label || "Unnamed") + "</span>" +
+    (dev.notes ? "<span class=\"device-sub\">" + esc(dev.notes) + "</span>" : "");
+  const actions = clientID
+    ? "<button onclick=\"promptEditLabel(" + jsStr(clientID) + "," + jsStr(dev.label || "") + ")\">Rename</button>"
+    : "";
+  const sessionBtn = dev.online && dev.session_id
+    ? " <button onclick=\"selectSession(" + dev.session_id + ")\">Inspect</button>"
+    : "";
+  return "<tr><td>" + labelCell + "</td><td>" + registryStatus(dev) + "</td><td class=\"mono\">" +
+    (dev.session_id ? esc(dev.session_id) : "—") + "</td><td>" +
+    esc(dev.last_device_name || "—") + "</td><td>" + esc(dev.last_model || "—") + "</td><td class=\"mono\">" +
+    esc(clientID || "—") + "</td><td>" + actions + sessionBtn + "</td></tr>";
+}
+function promptEditLabel(clientID, current){
+  const label = window.prompt("User label", current || "");
+  if(label === null) return;
+  saveDeviceLabel(clientID, label.trim());
+}
+function refreshRegistry(d){
+  const body = document.querySelector("#registryTbl tbody");
+  const rows = (d.registered_devices || []).slice(0,200);
+  body.innerHTML = rows.length ? rows.map(rowRegistry).join("") :
+    "<tr class=\"empty-row\"><td colspan=\"7\">No devices registered yet — add a user above</td></tr>";
 }
 function selectSession(id){
   selectedSessionId = id;
@@ -597,6 +773,7 @@ function renderDetails(){
   document.getElementById("inspectorSub").textContent = phonePlain(x);
   document.getElementById("dSession").textContent = x.session_id;
   document.getElementById("dClientId").textContent = x.client_id || (x.device_info && x.device_info.client_id) || "—";
+  document.getElementById("dLabelInput").value = x.label || phonePlain(x).split(" · ")[0] || "";
   document.getElementById("dPhone").innerHTML = phoneText(x);
   document.getElementById("dBattery").innerHTML = batteryText(x);
   document.getElementById("dLoc").innerHTML = locText(x);
@@ -657,6 +834,7 @@ function applySnap(d){
   if(selectedSessionId === null && d.active && d.active.length > 0) selectedSessionId = d.active[0].session_id;
   if(selectedSessionId !== null && !sessions[selectedSessionId] && d.active && d.active.length) selectedSessionId = d.active[0].session_id;
   refreshTables();
+  refreshRegistry(d);
   renderDetails();
   updateMap(d.active||[]);
 }

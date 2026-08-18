@@ -133,7 +133,7 @@ final class VPNManager: ObservableObject {
             existingProto?.providerBundleIdentifier == tunnelProviderIdentifier &&
             existingProto?.serverAddress == JVPNServiceConfig.serverHost &&
             NSDictionary(dictionary: existingProto?.providerConfiguration ?? [:]).isEqual(to: providerConfiguration)
-        let expectedName = mode == .udpOverTCP ? "JVPN Experimental" : "JVPN"
+        let expectedName = "JVPN"
         let needsAlwaysOn =
             existingProto == nil ||
             !(existingProto?.includeAllNetworks ?? false) ||

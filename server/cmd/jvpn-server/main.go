@@ -137,7 +137,21 @@ func main() {
 
 	hub := server.NewHub()
 	hub.SetTUNReady(true)
+	if reg, err := server.NewDeviceRegistry(filepath.Join(*dataDir, "devices.json")); err != nil {
+		log.Fatalf("device registry: %v", err)
+	} else {
+		hub.SetDeviceRegistry(reg)
+	}
+	if store, err := server.NewSessionStore(filepath.Join(*dataDir, "sessions.json")); err != nil {
+		log.Fatalf("session store: %v", err)
+	} else {
+		hub.SetSessionStore(store)
+		log.Printf("loaded %d persisted client sessions", len(store.KnownSessions()))
+	}
 	pool := session.NewIPPool()
+	if store := hub.SessionStore(); store != nil {
+		pool.RestoreUsed(store.ReservedIPs())
+	}
 	tunOut := server.NewSerializedTUN(ifce, 8192)
 	go hub.RunTUNReader(ifce)
 	if *adminListen != "" {
@@ -146,7 +160,7 @@ func main() {
 		}
 		go func() {
 			log.Printf("admin dashboard listening on %s (use SSH tunnel; basic auth enabled)", *adminListen)
-			if err := dashboard.Start(*adminListen, *adminUser, *adminPass, hub); err != nil {
+			if err := dashboard.Start(*adminListen, *adminUser, *adminPass, hub, pool); err != nil {
 				log.Fatalf("admin dashboard: %v", err)
 			}
 		}()

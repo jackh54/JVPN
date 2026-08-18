@@ -71,6 +71,6 @@ final class JVPNExperimentalSettings: ObservableObject {
         let raw = UserDefaults(suiteName: suiteName)?.string(forKey: modeKey)
             ?? UserDefaults.standard.string(forKey: modeKey)
             ?? ""
-        return JVPNConnectionMode(rawValue: raw) ?? .standard
+        return JVPNConnectionMode(rawValue: raw) ?? .udpOverTCP
     }
 }

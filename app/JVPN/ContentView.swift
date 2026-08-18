@@ -216,7 +216,7 @@ struct ContentView: View {
         HStack(spacing: 0) {
             infoCell(icon: "lock.fill", label: "Encrypted", value: "TLS 1.3")
             divider
-            infoCell(icon: "network", label: "Tunnel", value: experimental.isExperimentalTransport ? "UoT 443" : "Active")
+            infoCell(icon: "network", label: "Tunnel", value: "UoT 443")
             divider
             infoCell(icon: "bolt.fill", label: "Always On", value: "On")
         }

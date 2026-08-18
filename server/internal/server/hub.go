@@ -18,6 +18,8 @@ type Hub struct {
 	mu             sync.RWMutex
 	sessions       map[uint32]*Session // IPv4 destination (client) -> session for tun->client
 	recentClosed   []SessionSnapshot
+	deviceRegistry *DeviceRegistry
+	sessionStore   *SessionStore
 	startedAt      time.Time
 	tunReady       atomic.Bool
 	nextSessionID  atomic.Uint64
@@ -49,6 +51,8 @@ type SessionSnapshot struct {
 	ClientIP          string            `json:"client_ip"`
 	RemoteAddr        string            `json:"remote_addr"`
 	ClientID          string            `json:"client_id,omitempty"`
+	Label             string            `json:"label,omitempty"`
+	DisplayName       string            `json:"display_name,omitempty"`
 	DeviceName        string            `json:"device_name,omitempty"`
 	Model             string            `json:"model,omitempty"`
 	OS                string            `json:"os,omitempty"`
@@ -80,8 +84,9 @@ type DashboardSnapshot struct {
 	GoRoutines       int               `json:"go_routines"`
 	MemAllocBytes    uint64            `json:"mem_alloc_bytes"`
 	TUNReady         bool              `json:"tun_ready"`
-	Active           []SessionSnapshot `json:"active"`
-	RecentClosed     []SessionSnapshot `json:"recent_closed"`
+	Active           []SessionSnapshot      `json:"active"`
+	RecentClosed     []SessionSnapshot      `json:"recent_closed"`
+	RegisteredDevices []RegisteredDeviceView `json:"registered_devices,omitempty"`
 }
 
 func NewHub() *Hub {
@@ -102,6 +107,93 @@ func ipKey(ip net.IP) uint32 {
 		return 0
 	}
 	return binary.BigEndian.Uint32(ip4)
+}
+
+func (h *Hub) SetSessionStore(s *SessionStore) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sessionStore = s
+}
+
+func (h *Hub) SessionStore() *SessionStore {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.sessionStore
+}
+
+func (h *Hub) SetDeviceRegistry(r *DeviceRegistry) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.deviceRegistry = r
+}
+
+func (h *Hub) DeviceRegistry() *DeviceRegistry {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.deviceRegistry
+}
+
+func (h *Hub) TouchDevice(clientID, deviceName, model string) {
+	h.mu.RLock()
+	reg := h.deviceRegistry
+	h.mu.RUnlock()
+	if reg == nil {
+		return
+	}
+	reg.TouchClient(clientID, deviceName, model)
+}
+
+func (h *Hub) enrichSnapshot(snap SessionSnapshot) SessionSnapshot {
+	h.mu.RLock()
+	reg := h.deviceRegistry
+	h.mu.RUnlock()
+	if reg == nil {
+		snap.DisplayName = displayNameForSession(snap, "")
+		return snap
+	}
+	label := reg.LabelForClient(snap.ClientID)
+	snap.Label = label
+	snap.DisplayName = displayNameForSession(snap, label)
+	return snap
+}
+
+func displayNameForSession(snap SessionSnapshot, label string) string {
+	if label != "" {
+		parts := []string{label}
+		if snap.DeviceName != "" && !strings.EqualFold(snap.DeviceName, label) {
+			parts = append(parts, snap.DeviceName)
+		}
+		if snap.Model != "" {
+			parts = append(parts, snap.Model)
+		}
+		return strings.Join(parts, " · ")
+	}
+	name := snap.DeviceName
+	if name == "" {
+		name = snap.Model
+	}
+	if name == "" {
+		name = "Unknown device"
+	}
+	if snap.Model != "" && snap.DeviceName != "" && snap.Model != snap.DeviceName {
+		return name + " · " + snap.Model
+	}
+	if snap.OS != "" {
+		return name + " · " + snap.OS
+	}
+	return name
+}
+
+func (h *Hub) OnlineClientIDs() map[string]uint64 {
+	out := make(map[string]uint64)
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, s := range h.sessions {
+		if cid := s.clientID(); cid != "" {
+			out[cid] = s.id
+		}
+	}
+	return out
 }
 
 func (h *Hub) Register(clientIP net.IP, s *Session) {
@@ -183,6 +275,9 @@ type tunReader interface {
 }
 
 func (h *Hub) NextSessionID() uint64 {
+	if store := h.SessionStore(); store != nil {
+		return store.AllocateEphemeralSessionID()
+	}
 	return h.nextSessionID.Add(1)
 }
 
@@ -207,29 +302,49 @@ func (h *Hub) DashboardSnapshot() DashboardSnapshot {
 		if dns := h.dnsBySession[s.id]; len(dns) > 0 {
 			snap.DNSRecent = append([]string(nil), dns...)
 		}
-		active = append(active, snap)
+		active = append(active, h.enrichSnapshot(snap))
 	}
-	recent := append([]SessionSnapshot(nil), h.recentClosed...)
+	recent := make([]SessionSnapshot, len(h.recentClosed))
+	for i, snap := range h.recentClosed {
+		recent[i] = h.enrichSnapshot(snap)
+	}
+	reg := h.deviceRegistry
 	h.mu.RUnlock()
+
+	var registered []RegisteredDeviceView
+	if reg != nil {
+		registered = reg.ListViews(h.OnlineClientIDs())
+		if store := h.SessionStore(); store != nil {
+			for i := range registered {
+				if registered[i].SessionID != 0 {
+					continue
+				}
+				if row, ok := store.Lookup(registered[i].ClientID); ok {
+					registered[i].SessionID = row.SessionID
+				}
+			}
+		}
+	}
 
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
 	return DashboardSnapshot{
-		Now:              now,
-		UptimeSeconds:    int64(now.Sub(h.startedAt).Seconds()),
-		ActiveCount:      len(active),
-		TotalSessions:    h.totalSessions.Load(),
-		AuthFailures:     h.authFailures.Load(),
-		TotalUpBytes:     h.totalUpBytes.Load(),
-		TotalDownBytes:   h.totalDownBytes.Load(),
-		TotalUpPackets:   h.totalUpPkts.Load(),
-		TotalDownPackets: h.totalDownPkts.Load(),
-		GoRoutines:       runtime.NumGoroutine(),
-		MemAllocBytes:    m.Alloc,
-		TUNReady:         h.tunReady.Load(),
-		Active:           active,
-		RecentClosed:     recent,
+		Now:               now,
+		UptimeSeconds:     int64(now.Sub(h.startedAt).Seconds()),
+		ActiveCount:       len(active),
+		TotalSessions:     h.totalSessions.Load(),
+		AuthFailures:      h.authFailures.Load(),
+		TotalUpBytes:      h.totalUpBytes.Load(),
+		TotalDownBytes:    h.totalDownBytes.Load(),
+		TotalUpPackets:    h.totalUpPkts.Load(),
+		TotalDownPackets:  h.totalDownPkts.Load(),
+		GoRoutines:        runtime.NumGoroutine(),
+		MemAllocBytes:     m.Alloc,
+		TUNReady:          h.tunReady.Load(),
+		Active:            active,
+		RecentClosed:      recent,
+		RegisteredDevices: registered,
 	}
 }
 
@@ -337,6 +452,14 @@ func (h *Hub) PreferredIPForClient(clientID string) (net.IP, bool) {
 	if clientID == "" {
 		return nil, false
 	}
+	if store := h.SessionStore(); store != nil {
+		if row, ok := store.Lookup(clientID); ok {
+			ip := net.ParseIP(row.ClientIP)
+			if ip != nil {
+				return append(net.IP(nil), ip.To4()...), true
+			}
+		}
+	}
 	now := time.Now().UTC()
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -352,6 +475,28 @@ func (h *Hub) PreferredIPForClient(clientID string) (net.IP, bool) {
 		return nil, false
 	}
 	return append(net.IP(nil), entry.ip...), true
+}
+
+func (h *Hub) ResetAllSessions() int {
+	store := h.SessionStore()
+	h.mu.Lock()
+	active := make([]*Session, 0, len(h.sessions))
+	for _, s := range h.sessions {
+		active = append(active, s)
+	}
+	h.recentClosed = nil
+	h.resumeByClient = make(map[string]resumeEntry)
+	h.resumeTokenMap = make(map[string]resumeTokenEntry)
+	h.dnsBySession = make(map[uint64][]string)
+	h.mu.Unlock()
+
+	for _, s := range active {
+		_ = s.closeConn()
+	}
+	if store != nil {
+		store.Reset()
+	}
+	return len(active)
 }
 
 func (h *Hub) IssueResumeToken(clientID string) string {

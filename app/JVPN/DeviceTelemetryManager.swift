@@ -5,7 +5,6 @@
 
 import Combine
 import CoreLocation
-import Darwin
 import Foundation
 
 #if canImport(UIKit)
@@ -99,14 +98,6 @@ final class DeviceTelemetryManager: NSObject, ObservableObject {
 #endif
     }
 
-    private func deviceModelIdentifier() -> String {
-        var u = utsname()
-        uname(&u)
-        return withUnsafePointer(to: &u.machine) {
-            $0.withMemoryRebound(to: CChar.self, capacity: Int(_SYS_NAMELEN)) { String(cString: $0) }
-        }
-    }
-
     private func batterySnapshot() -> (pct: String?, charging: String?) {
 #if canImport(UIKit)
         let level = UIDevice.current.batteryLevel
@@ -164,9 +155,9 @@ final class DeviceTelemetryManager: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 JVPNAppGroupTelemetry.write(
-                    deviceName: ProcessInfo.processInfo.hostName,
-                    model: self.deviceModelIdentifier(),
-                    os: ProcessInfo.processInfo.operatingSystemVersionString,
+                    deviceName: DeviceIdentity.userVisibleName,
+                    model: DeviceIdentity.friendlyModelName,
+                    os: DeviceIdentity.shortOSVersion,
                     batteryPct: battery.pct,
                     charging: battery.charging,
                     lat: lat,

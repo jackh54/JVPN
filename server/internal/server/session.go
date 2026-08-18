@@ -74,6 +74,38 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 			hello.Device["client_id"] = clientID
 		}
 	}
+
+	store := hub.SessionStore()
+	var (
+		sessionID      uint64
+		keepIPReserved bool
+		resumedSession bool
+	)
+	if store != nil && clientID != "" {
+		binding, ok := store.Resolve(clientID, sanitizeDeviceInfo(hello.Device))
+		if !ok {
+			_ = protocol.WriteServerHandshake(c, protocol.StatusDeny, nil, 0)
+			log.Printf("session store resolve failed for %s", clientID)
+			_ = c.Close()
+			return
+		}
+		sessionID = binding.SessionID
+		resumedSession = binding.Resumed
+		keepIPReserved = true
+		if deviceInfo := binding.DeviceInfo; len(deviceInfo) > 0 {
+			if hello.Device == nil {
+				hello.Device = map[string]string{}
+			}
+			for k, v := range deviceInfo {
+				if _, exists := hello.Device[k]; !exists {
+					hello.Device[k] = v
+				}
+			}
+		}
+	} else {
+		sessionID = hub.NextSessionID()
+	}
+
 	var clientIP net.IP
 	if pref, ok := hub.PreferredIPForClient(clientID); ok {
 		clientIP = pool.AllocatePreferred(pref)
@@ -90,7 +122,14 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 		_ = c.Close()
 		return
 	}
-	defer pool.Release(clientIP)
+	if store != nil && clientID != "" {
+		store.AssignIP(clientID, clientIP)
+	}
+	defer func() {
+		if !keepIPReserved {
+			pool.Release(clientIP)
+		}
+	}()
 
 	prefix := byte(ipool.PrefixLength)
 	var hsErr error
@@ -106,7 +145,7 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 	}
 
 	s := &Session{
-		id:          hub.NextSessionID(),
+		id:          sessionID,
 		clientIP:    append(net.IP(nil), clientIP...),
 		remoteAddr:  c.RemoteAddr().String(),
 		connectedAt: time.Now().UTC(),
@@ -115,8 +154,18 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 		downstream:  make(chan []byte, 16384),
 	}
 	hub.Register(clientIP, s)
-	defer hub.Unregister(clientIP)
-	log.Printf("client connected: session=%d remote=%s assigned=%s", s.id, s.remoteAddr, s.clientIP.String())
+	s.syncDeviceRegistry()
+	defer func() {
+		if store != nil && clientID != "" {
+			store.Touch(clientID, s.deviceInfoSnapshot())
+		}
+		hub.Unregister(clientIP)
+	}()
+	if resumedSession {
+		log.Printf("client resumed: session=%d client_id=%s remote=%s assigned=%s", s.id, clientID, s.remoteAddr, s.clientIP.String())
+	} else {
+		log.Printf("client connected: session=%d remote=%s assigned=%s", s.id, s.remoteAddr, s.clientIP.String())
+	}
 	s.setConn(c)
 	_ = c.SetReadDeadline(time.Now().Add(IdleTimeout))
 
@@ -155,6 +204,36 @@ func (s *Session) clientID() string {
 		return ""
 	}
 	return strings.TrimSpace(s.deviceInfo["client_id"])
+}
+
+func (s *Session) syncDeviceRegistry() {
+	s.deviceMu.RLock()
+	var clientID, deviceName, model string
+	if s.deviceInfo != nil {
+		clientID = strings.TrimSpace(s.deviceInfo["client_id"])
+		deviceName = strings.TrimSpace(s.deviceInfo["device_name"])
+		model = strings.TrimSpace(s.deviceInfo["model"])
+	}
+	s.deviceMu.RUnlock()
+	if clientID != "" {
+		s.hub.TouchDevice(clientID, deviceName, model)
+		if store := s.hub.SessionStore(); store != nil {
+			store.Touch(clientID, s.deviceInfoSnapshot())
+		}
+	}
+}
+
+func (s *Session) deviceInfoSnapshot() map[string]string {
+	s.deviceMu.RLock()
+	defer s.deviceMu.RUnlock()
+	if len(s.deviceInfo) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(s.deviceInfo))
+	for k, v := range s.deviceInfo {
+		out[k] = v
+	}
+	return out
 }
 
 func (s *Session) touchReadDeadline(c net.Conn) {
@@ -258,6 +337,7 @@ func (s *Session) applyTelemetry(body []byte) {
 		s.telemetryAt = time.Now().UTC()
 		s.deviceInfo["updated_at"] = s.telemetryAt.Format(time.RFC3339)
 	}
+	s.syncDeviceRegistry()
 }
 
 func (s *Session) tunToTLS(c net.Conn) {

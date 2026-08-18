@@ -86,3 +86,25 @@ func (p *IPPool) Release(ip net.IP) {
 	defer p.mu.Unlock()
 	delete(p.used, host)
 }
+
+func (p *IPPool) RestoreUsed(ips []net.IP) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, ip := range ips {
+		host, ok := HostOf(ip)
+		if !ok || host < firstHost || host > lastHost {
+			continue
+		}
+		p.used[host] = struct{}{}
+		if host >= p.cursor {
+			p.cursor = host + 1
+		}
+	}
+}
+
+func (p *IPPool) Reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.used = make(map[uint16]struct{})
+	p.cursor = firstHost
+}

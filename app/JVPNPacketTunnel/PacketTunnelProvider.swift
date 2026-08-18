@@ -473,13 +473,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if !force, rev == lastSentTelemetryRevision { return }
         var meta = JVPNAppGroupTelemetry.snapshotDictionary(clientIDFallback: Self.stableClientID())
         if meta["device_name"] == nil {
-            meta["device_name"] = ProcessInfo.processInfo.hostName
+            meta["device_name"] = DeviceIdentity.userVisibleName
         }
         if meta["model"] == nil {
-            meta["model"] = Self.machineIdentifier()
+            meta["model"] = DeviceIdentity.friendlyModelName
         }
         if meta["os"] == nil {
-            meta["os"] = ProcessInfo.processInfo.operatingSystemVersionString
+            meta["os"] = DeviceIdentity.shortOSVersion
         }
         if meta["updated_at"] == nil {
             meta["updated_at"] = String(Int(Date().timeIntervalSince1970))
@@ -1072,24 +1072,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return out
     }
 
-    private static func machineIdentifier() -> String {
-        var u = utsname()
-        uname(&u)
-        return withUnsafePointer(to: &u.machine) {
-            $0.withMemoryRebound(to: CChar.self, capacity: Int(_SYS_NAMELEN)) { String(cString: $0) }
-        }
-    }
-
     private static func deviceMetadataData() -> Data {
         var meta = JVPNAppGroupTelemetry.snapshotDictionary(clientIDFallback: stableClientID())
         if meta["device_name"] == nil {
-            meta["device_name"] = ProcessInfo.processInfo.hostName
+            meta["device_name"] = DeviceIdentity.userVisibleName
         }
         if meta["model"] == nil {
-            meta["model"] = machineIdentifier()
+            meta["model"] = DeviceIdentity.friendlyModelName
         }
         if meta["os"] == nil {
-            meta["os"] = ProcessInfo.processInfo.operatingSystemVersionString
+            meta["os"] = DeviceIdentity.shortOSVersion
         }
         meta["app_bundle_id"] = Bundle.main.bundleIdentifier ?? "unknown"
         return (try? JSONSerialization.data(withJSONObject: meta)) ?? Data()
