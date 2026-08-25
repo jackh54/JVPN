@@ -71,6 +71,7 @@ final class JVPNExperimentalSettings: ObservableObject {
         let raw = UserDefaults(suiteName: suiteName)?.string(forKey: modeKey)
             ?? UserDefaults.standard.string(forKey: modeKey)
             ?? ""
-        return JVPNConnectionMode(rawValue: raw) ?? .udpOverTCP
+        // Default to standard WS/TCP — UoT is opt-in experimental.
+        return JVPNConnectionMode(rawValue: raw) ?? .standard
     }
 }

@@ -27,10 +27,5 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).PacketTunnelProvider</string>
 	</dict>
-	<key>UIDeviceFamily</key>
-	<array>
-		<integer>2</integer>
-		<integer>6</integer>
-	</array>
 </dict>
 </plist>

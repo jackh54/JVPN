@@ -17,6 +17,7 @@ struct ContentView: View {
     @State private var pulseScale: CGFloat = 1.0
     @State private var ringRotation: Double = 0
     @State private var showExperimental = false
+    @State private var didBootstrap = false
 
     private let accent = Color(red: 0.24, green: 0.87, blue: 0.60)
     private let danger = Color(red: 0.95, green: 0.35, blue: 0.42)
@@ -53,11 +54,10 @@ struct ContentView: View {
         .sheet(isPresented: $showExperimental) {
             ExperimentalView()
         }
-        .task {
-            VPNNotificationManager.requestAuthorization()
-            await vpn.load()
-            telemetry.prepareForTracking()
-            updateProtectionAnimations(isProtected)
+        // Do not use SwiftUI `.task` on macOS 26+: `_TaskModifier2` → `Task.immediate`
+        // → `swift_task_isMainExecutorImpl` can SIGSEGV (0x1e) during showInitialWindows/reopen.
+        .onAppear {
+            bootstrapIfNeeded()
         }
         .onChange(of: isProtected) { _, protected in
             updateProtectionAnimations(protected)
@@ -166,7 +166,9 @@ struct ContentView: View {
                     Image(systemName: "shield.checkered")
                         .font(.system(size: 56, weight: .light))
                         .foregroundStyle(accent.opacity(0.9))
+#if os(iOS)
                         .symbolEffect(.pulse, options: .repeating)
+#endif
                 } else {
                     Image(systemName: "shield.slash")
                         .font(.system(size: 56, weight: .light))
@@ -408,6 +410,20 @@ struct ContentView: View {
 
     // MARK: - Actions
 
+    private func bootstrapIfNeeded() {
+        guard !didBootstrap else { return }
+        didBootstrap = true
+        VPNNotificationManager.requestAuthorization()
+        // Defer past the current SwiftUI update so concurrency setup is not
+        // nested inside Update.dispatchActions / showInitialWindows.
+        DispatchQueue.main.async { [vpn, telemetry] in
+            Task { @MainActor in
+                await vpn.load()
+                telemetry.prepareForTracking()
+            }
+        }
+    }
+
     private func toggleVPN() async {
         message = ""
         switch vpn.status {
@@ -416,13 +432,13 @@ struct ContentView: View {
             vpn.disconnect()
             telemetry.stopMonitoring()
         default:
-            telemetry.prepareForTracking()
             telemetry.publishTelemetry(force: true)
             isWorking = true
             defer { isWorking = false }
             JVPNDebugLog.app("toggleVPN connect begin")
             do {
                 try await vpn.connect()
+                telemetry.prepareForTracking()
                 telemetry.startMonitoring()
                 JVPNDebugLog.app("toggleVPN connect finished without throw")
             } catch {

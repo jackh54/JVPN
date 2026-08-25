@@ -179,6 +179,7 @@
 				F2DB26F32F96A45B004E161F /* Frameworks */,
 				F2DB26F42F96A45B004E161F /* Resources */,
 				F2DB28092F96A45B004E161F /* Embed Foundation Extensions */,
+				F29A14022F9F00AA004E161F /* Strip Catalyst UIDeviceFamily from macOS appex */,
 			);
 			buildRules = (
 			);
@@ -361,7 +362,26 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -euo pipefail\nif [ \"${IS_MACCATALYST:-NO}\" = \"YES\" ]; then\n    plist=\"${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}\"\n    if [ -f \"$plist\" ]; then\n        /usr/bin/plutil -replace UIDeviceFamily -json '[2, 6]' \"$plist\"\n        echo \"note: Set UIDeviceFamily=[2,6] on $plist\"\n    else\n        echo \"warning: Info.plist not found at $plist\"\n    fi\nfi\n";
+			shellScript = "set -euo pipefail\nplist=\"${BUILT_PRODUCTS_DIR}/${INFOPLIST_PATH}\"\nif [ ! -f \"$plist\" ]; then\n    echo \"warning: Info.plist not found at $plist\"\n    exit 0\nfi\n# Native macOS packet-tunnel validation fails if Catalyst UIDeviceFamily is present.\nif [ \"${IS_MACCATALYST:-NO}\" = \"YES\" ]; then\n    /usr/bin/plutil -replace UIDeviceFamily -json '[2, 6]' \"$plist\"\n    echo \"note: Set UIDeviceFamily=[2,6] (Catalyst) on $plist\"\nelif [ \"${PLATFORM_NAME:-}\" = \"macosx\" ]; then\n    /usr/bin/plutil -remove UIDeviceFamily \"$plist\" 2>/dev/null || true\n    echo \"note: Removed UIDeviceFamily for native macOS packet tunnel\"\nfi\n";
+		};
+		F29A14022F9F00AA004E161F /* Strip Catalyst UIDeviceFamily from macOS appex */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Strip Catalyst UIDeviceFamily from macOS appex";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\n# Xcode re-injects UIDeviceFamily=[2,6] after the appex target script; strip it from the\n# embedded copy or nesessionmanager logs \"Validation of the extension failed\" on macOS.\nif [ \"${PLATFORM_NAME:-}\" != \"macosx\" ] || [ \"${IS_MACCATALYST:-NO}\" = \"YES\" ]; then\n    exit 0\nfi\nappex=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}/Contents/PlugIns/JVPNPacketTunnel.appex\"\nplist=\"${appex}/Contents/Info.plist\"\nif [ ! -f \"$plist\" ]; then\n    echo \"warning: embedded appex Info.plist not found at $plist\"\n    exit 0\nfi\nif /usr/bin/plutil -extract UIDeviceFamily xml1 -o - \"$plist\" >/dev/null 2>&1; then\n    /usr/bin/plutil -remove UIDeviceFamily \"$plist\"\n    echo \"note: Stripped UIDeviceFamily from embedded $plist\"\n    if [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] && [ \"${EXPANDED_CODE_SIGN_IDENTITY}\" != \"-\" ]; then\n        /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --timestamp=none --preserve-metadata=identifier,entitlements,flags --generate-entitlement-der \"$appex\"\n        echo \"note: Re-signed $appex after Info.plist strip\"\n    fi\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -544,7 +564,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = JVPN/JVPN.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 32;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DEVELOPMENT_TEAM = 6QD6S4D57J;
 				ENABLE_PREVIEWS = YES;
@@ -585,7 +605,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = JVPN/JVPN.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 32;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DEVELOPMENT_TEAM = 6QD6S4D57J;
 				ENABLE_PREVIEWS = YES;
@@ -708,7 +728,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = JVPNPacketTunnel/JVPNPacketTunnel.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = 6QD6S4D57J;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -732,7 +752,8 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphoneos*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphonesimulator*]" = "1,2";
 			};
 			name = Debug;
 		};
@@ -742,7 +763,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = JVPNPacketTunnel/JVPNPacketTunnel.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = 6QD6S4D57J;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -766,7 +787,8 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphoneos*]" = "1,2";
+				"TARGETED_DEVICE_FAMILY[sdk=iphonesimulator*]" = "1,2";
 			};
 			name = Release;
 		};

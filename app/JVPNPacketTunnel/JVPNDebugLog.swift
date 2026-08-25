@@ -16,14 +16,14 @@ enum JVPNDebugLog {
     static func app(_ message: @autoclosure () -> String) {
 #if DEBUG
         let text = message()
-        appLogger.debug("\(text, privacy: .public)")
+        appLogger.info("\(text, privacy: .public)")
 #endif
     }
 
     static func tunnel(_ message: @autoclosure () -> String) {
 #if DEBUG
         let text = message()
-        tunnelLogger.debug("\(text, privacy: .public)")
+        tunnelLogger.info("\(text, privacy: .public)")
 #endif
     }
 }

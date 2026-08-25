@@ -70,11 +70,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var sendInFlight = false
 
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+        JVPNDebugLog.tunnel("startTunnel begin")
         guard let proto = protocolConfiguration as? NETunnelProviderProtocol,
               let cfg = proto.providerConfiguration,
               let host = cfg[TunnelConfigKey.host] as? String,
               let tokenRaw = cfg[TunnelConfigKey.token] as? String
         else {
+            JVPNDebugLog.tunnel("startTunnel missing providerConfiguration")
             completionHandler(NSError(domain: "JVPN", code: 1, userInfo: [NSLocalizedDescriptionKey: "Missing tunnel configuration"]))
             return
         }

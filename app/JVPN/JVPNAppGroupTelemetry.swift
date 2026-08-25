@@ -28,7 +28,19 @@ enum JVPNAppGroupTelemetry {
         UserDefaults(suiteName: suiteName)
     }
 
+    /// Ensures the App Group container exists (avoids CFPrefs "kCFPreferencesAnyUser" detach warnings on macOS).
+    @discardableResult
+    static func ensureContainer() -> URL? {
+        guard let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName) else {
+            JVPNDebugLog.app("App Group container unavailable for \(suiteName)")
+            return nil
+        }
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
     static func ensureClientID() -> String {
+        _ = ensureContainer()
         let key = Key.clientID
         if let suite = defaults, let existing = suite.string(forKey: key), !existing.isEmpty {
             return existing

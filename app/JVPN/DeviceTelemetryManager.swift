@@ -58,7 +58,9 @@ final class DeviceTelemetryManager: NSObject, ObservableObject {
     }
 
     func stopMonitoring() {
+#if os(iOS)
         locationManager.allowsBackgroundLocationUpdates = false
+#endif
         locationManager.stopUpdatingLocation()
         throttleWorkItem?.cancel()
         throttleWorkItem = nil
@@ -70,7 +72,11 @@ final class DeviceTelemetryManager: NSObject, ObservableObject {
 
     private func startLocationUpdatesIfAllowed() {
         guard isAlwaysAuthorized else { return }
+        // macOS asserts if allowsBackgroundLocationUpdates is set without a
+        // backgroundable location client (UIBackgroundModes / Catalyst).
+#if os(iOS)
         locationManager.allowsBackgroundLocationUpdates = true
+#endif
         locationManager.startUpdatingLocation()
     }
 
