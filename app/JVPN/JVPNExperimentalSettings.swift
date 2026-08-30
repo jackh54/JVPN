@@ -54,8 +54,13 @@ final class JVPNExperimentalSettings: ObservableObject {
         didSet { persist(connectionMode) }
     }
 
+    @Published var notificationsEnabled: Bool {
+        didSet { persistNotifications(notificationsEnabled) }
+    }
+
     private init() {
         connectionMode = Self.loadMode()
+        notificationsEnabled = Self.loadNotificationsEnabled()
     }
 
     var isExperimentalTransport: Bool {
@@ -65,6 +70,15 @@ final class JVPNExperimentalSettings: ObservableObject {
     private func persist(_ mode: JVPNConnectionMode) {
         UserDefaults(suiteName: Self.suiteName)?.set(mode.rawValue, forKey: Self.modeKey)
         UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey)
+    }
+
+    private func persistNotifications(_ enabled: Bool) {
+        UserDefaults(suiteName: Self.suiteName)?.set(enabled, forKey: JVPNAppGroupTelemetry.Key.notificationsEnabled)
+        UserDefaults.standard.set(enabled, forKey: JVPNAppGroupTelemetry.Key.notificationsEnabled)
+    }
+
+    private static func loadNotificationsEnabled() -> Bool {
+        JVPNAppGroupTelemetry.notificationsEnabled()
     }
 
     private static func loadMode() -> JVPNConnectionMode {

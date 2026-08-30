@@ -18,6 +18,7 @@ enum TunnelNotify {
     }
 
     static func post(title: String, body: String) {
+        guard JVPNAppGroupTelemetry.notificationsEnabled() else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
