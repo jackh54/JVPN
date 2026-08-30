@@ -22,6 +22,17 @@ enum JVPNAppGroupTelemetry {
         static let lon = "telemetry.lon"
         static let updatedAt = "telemetry.updated_at"
         static let revision = "telemetry.revision"
+        static let notificationsEnabled = "user.notifications_enabled"
+    }
+
+    static func notificationsEnabled(default defaultValue: Bool = true) -> Bool {
+        if let value = defaults?.object(forKey: Key.notificationsEnabled) as? Bool {
+            return value
+        }
+        if let value = UserDefaults.standard.object(forKey: Key.notificationsEnabled) as? Bool {
+            return value
+        }
+        return defaultValue
     }
 
     static var defaults: UserDefaults? {

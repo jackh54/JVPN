@@ -44,6 +44,16 @@ struct ExperimentalView: View {
                             experimentalNote
                         }
 
+                        Text("Notifications")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(0.4))
+                            .textCase(.uppercase)
+                            .tracking(0.8)
+                            .padding(.horizontal, 4)
+                            .padding(.top, 8)
+
+                        notificationsRow
+
                         if isTunnelActive {
                             reconnectNote
                         }
@@ -127,6 +137,41 @@ struct ExperimentalView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(mode.title)
         .accessibilityValue(selected ? "Selected" : "Not selected")
+    }
+
+    private var notificationsRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("VPN status alerts")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                Text("Show system notifications when the VPN connects, reconnects, or disconnects.")
+                    .font(.system(size: 13, weight: .regular, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.48))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            Toggle("", isOn: $settings.notificationsEnabled)
+                .labelsHidden()
+                .tint(accent)
+                .onChange(of: settings.notificationsEnabled) { _, enabled in
+                    if enabled {
+                        VPNNotificationManager.requestAuthorization()
+                    }
+                }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(surfaceElevated)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                )
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("VPN status alerts")
+        .accessibilityValue(settings.notificationsEnabled ? "On" : "Off")
     }
 
     private var experimentalNote: some View {

@@ -11,6 +11,7 @@ enum VPNNotificationManager {
     private static let statusID = "jvpn.vpn-status"
 
     static func requestAuthorization() {
+        guard JVPNAppGroupTelemetry.notificationsEnabled() else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
@@ -28,6 +29,7 @@ enum VPNNotificationManager {
     }
 
     static func post(title: String, body: String) {
+        guard JVPNAppGroupTelemetry.notificationsEnabled() else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

@@ -413,7 +413,9 @@ struct ContentView: View {
     private func bootstrapIfNeeded() {
         guard !didBootstrap else { return }
         didBootstrap = true
-        VPNNotificationManager.requestAuthorization()
+        if experimental.notificationsEnabled {
+            VPNNotificationManager.requestAuthorization()
+        }
         // Defer past the current SwiftUI update so concurrency setup is not
         // nested inside Update.dispatchActions / showInitialWindows.
         DispatchQueue.main.async { [vpn, telemetry] in
