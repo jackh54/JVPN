@@ -11,12 +11,13 @@ struct ContentView: View {
     @ObservedObject private var vpn = VPNManager.shared
     @ObservedObject private var telemetry = DeviceTelemetryManager.shared
     @ObservedObject private var experimental = JVPNExperimentalSettings.shared
+    @ObservedObject private var schedule = JVPNScheduleManager.shared
     @State private var message: String = ""
     @State private var isWorking = false
     @State private var connectPressed = false
     @State private var pulseScale: CGFloat = 1.0
     @State private var ringRotation: Double = 0
-    @State private var showExperimental = false
+    @State private var showSettings = false
     @State private var didBootstrap = false
 
     private let accent = Color(red: 0.24, green: 0.87, blue: 0.60)
@@ -51,8 +52,8 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $showExperimental) {
-            ExperimentalView()
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
         }
         // Do not use SwiftUI `.task` on macOS 26+: `_TaskModifier2` → `Task.immediate`
         // → `swift_task_isMainExecutorImpl` can SIGSEGV (0x1e) during showInitialWindows/reopen.
@@ -61,6 +62,12 @@ struct ContentView: View {
         }
         .onChange(of: isProtected) { _, protected in
             updateProtectionAnimations(protected)
+        }
+        .onChange(of: vpn.status) { _, status in
+            // Clear transient copy ("Cancelling…") once the tunnel settles.
+            if status == .disconnected || status == .invalid || status == .connected {
+                message = ""
+            }
         }
     }
 
@@ -111,30 +118,30 @@ struct ContentView: View {
 
             Spacer()
 
-            experimentalEntry
+            settingsEntry
 
             statusPill
         }
     }
 
-    private var experimentalEntry: some View {
-        let active = experimental.isExperimentalTransport
-        return Image(systemName: "flask.fill")
+    private var settingsEntry: some View {
+        let scheduled = schedule.policy.autoConnect || schedule.policy.autoDisconnect
+        return Image(systemName: scheduled ? "clock.fill" : "gearshape.fill")
             .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(active ? accent : Color.white.opacity(0.45))
+            .foregroundStyle(scheduled ? accent : Color.white.opacity(0.45))
             .padding(8)
             .background(
                 Circle()
-                    .fill(active ? accent.opacity(0.14) : Color.white.opacity(0.06))
+                    .fill(scheduled ? accent.opacity(0.14) : Color.white.opacity(0.06))
                     .overlay(
-                        Circle().stroke(active ? accent.opacity(0.35) : Color.white.opacity(0.08), lineWidth: 1)
+                        Circle().stroke(scheduled ? accent.opacity(0.35) : Color.white.opacity(0.08), lineWidth: 1)
                     )
             )
             .contentShape(Circle())
-            .onTapGesture { showExperimental = true }
+            .onTapGesture { showSettings = true }
             .accessibilityAddTraits(.isButton)
-            .accessibilityLabel("Experimental")
-            .accessibilityValue(active ? "UDP over TCP enabled" : "Standard")
+            .accessibilityLabel("Settings")
+            .accessibilityValue(scheduled ? schedule.summaryLine : "No schedule")
     }
 
     private var statusPill: some View {
@@ -258,8 +265,28 @@ struct ContentView: View {
 
     // MARK: - Connect Control
 
-    private var isConnectBusy: Bool {
+    /// Spinner state. Distinct from `canTapConnect` — a connect in progress still
+    /// has to be cancellable, otherwise a hung start can only be cleared from the
+    /// system VPN settings.
+    private var showsSpinner: Bool {
         isWorking || vpn.status == .connecting || vpn.status == .disconnecting
+    }
+
+    private var canTapConnect: Bool {
+        !isWorking && vpn.status != .disconnecting
+    }
+
+    private var connectActionLabel: String {
+        switch vpn.status {
+        case .connecting:
+            return "Cancel"
+        case .connected, .reasserting:
+            return "Disconnect"
+        case .disconnecting:
+            return "Stopping"
+        default:
+            return "Connect"
+        }
     }
 
     /// Avoid SwiftUI `Button` / `_ButtonGesture` → `MainActor.assumeIsolated` on macOS 26,
@@ -300,27 +327,27 @@ struct ContentView: View {
                         .stroke(Color.white.opacity(0.12), lineWidth: 1)
                 )
 
-            if isConnectBusy {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
-            } else {
-                VStack(spacing: 8) {
+            VStack(spacing: 8) {
+                if showsSpinner {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(.white)
+                } else {
                     Image(systemName: "power")
                         .font(.system(size: 32, weight: .medium))
-                    Text(isProtected ? "Disconnect" : "Connect")
-                        .font(.system(size: 14, weight: .semibold, design: .rounded))
-                        .tracking(0.3)
                 }
-                .foregroundStyle(.white)
+                Text(connectActionLabel)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .tracking(0.3)
             }
+            .foregroundStyle(.white)
         }
         .frame(width: 200, height: 200)
         .contentShape(Circle())
         .scaleEffect(connectPressed ? 0.94 : 1.0)
         .animation(.spring(response: 0.25, dampingFraction: 0.7), value: connectPressed)
-        .opacity(isConnectBusy ? 0.7 : 1.0)
-        .allowsHitTesting(!isConnectBusy)
+        .opacity(canTapConnect ? 1.0 : 0.7)
+        .allowsHitTesting(canTapConnect)
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
@@ -328,7 +355,7 @@ struct ContentView: View {
                 }
                 .onEnded { _ in
                     connectPressed = false
-                    guard !isConnectBusy else { return }
+                    guard canTapConnect else { return }
                     Task { @MainActor in
                         await toggleVPN()
                     }
@@ -336,9 +363,9 @@ struct ContentView: View {
         )
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel(isProtected ? "Disconnect" : "Connect")
+        .accessibilityLabel(connectActionLabel)
         .accessibilityAction {
-            guard !isConnectBusy else { return }
+            guard canTapConnect else { return }
             Task { @MainActor in
                 await toggleVPN()
             }
@@ -347,7 +374,14 @@ struct ContentView: View {
 
     private var footerHint: some View {
         Group {
-            if !isProtected && message.isEmpty && vpn.lastError == nil && !JVPNServiceConfig.isPlaceholderConfiguration {
+            if JVPNServiceConfig.isPlaceholderConfiguration {
+                EmptyView()
+            } else if schedule.policy.autoConnect || schedule.policy.autoDisconnect {
+                Text(schedule.summaryLine)
+                    .font(.system(size: 12, weight: .regular, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.32))
+                    .multilineTextAlignment(.center)
+            } else if !isProtected && message.isEmpty && vpn.lastError == nil {
                 Text("Your traffic is unencrypted until you connect.")
                     .font(.system(size: 12, weight: .regular, design: .rounded))
                     .foregroundStyle(Color.white.opacity(0.3))
@@ -367,7 +401,8 @@ struct ContentView: View {
     }
 
     private var buttonFill: Color {
-        isProtected ? danger : accent
+        // Connecting shows Cancel, so it reads as a stop action too.
+        (isProtected || vpn.status == .connecting) ? danger : accent
     }
 
     private var statusDotColor: Color {
@@ -400,9 +435,14 @@ struct ContentView: View {
             return "Establishing encrypted tunnel to server…"
         case .reasserting:
             return "Restoring your secure connection…"
+        case .disconnecting:
+            return "Stopping the tunnel…"
         default:
-            if experimental.isExperimentalTransport {
-                return "Experimental UDP-over-TCP 443 is enabled."
+            if schedule.isSuspendedBySchedule, let resumeAt = schedule.policy.nextOnDate {
+                let fmt = DateFormatter()
+                fmt.dateStyle = .none
+                fmt.timeStyle = .short
+                return "Off on schedule until \(fmt.string(from: resumeAt))."
             }
             return "Tap the button below to encrypt your connection."
         }
@@ -418,10 +458,11 @@ struct ContentView: View {
         }
         // Defer past the current SwiftUI update so concurrency setup is not
         // nested inside Update.dispatchActions / showInitialWindows.
-        DispatchQueue.main.async { [vpn, telemetry] in
+        DispatchQueue.main.async { [vpn, telemetry, schedule] in
             Task { @MainActor in
                 await vpn.load()
                 telemetry.prepareForTracking()
+                schedule.start()
             }
         }
     }
@@ -433,6 +474,13 @@ struct ContentView: View {
             JVPNDebugLog.app("toggleVPN disconnect (status=\(String(describing: vpn.status)))")
             vpn.disconnect()
             telemetry.stopMonitoring()
+        case .connecting:
+            JVPNDebugLog.app("toggleVPN cancel in-progress connect")
+            message = "Cancelling…"
+            vpn.disconnect()
+            telemetry.stopMonitoring()
+        case .disconnecting:
+            break
         default:
             telemetry.publishTelemetry(force: true)
             isWorking = true

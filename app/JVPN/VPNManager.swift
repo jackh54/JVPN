@@ -58,8 +58,25 @@ final class VPNManager: ObservableObject {
     private var disableOnDemandWhenIdle = false
     private var isSavingPreferences = false
     private var didReportCurrentFailure = false
+    /// Set while the user (or the schedule) is cancelling a connect in progress,
+    /// so the aborted start is not reported as a tunnel failure.
+    private var cancelRequested = false
+    /// The schedule posts its own "turned off on schedule" alert; skip the
+    /// generic disconnect notice so the user does not get two banners.
+    private var suppressNextDisconnectNotice = false
+    private var connectingWatchdog: Task<Void, Never>?
+    /// How long `connecting` may last before we stop the tunnel and surface an
+    /// error. Without this the only way out is the system VPN settings toggle.
+    private static let connectingTimeout: Duration = .seconds(30)
 
     private init() {}
+
+    /// True once a JVPN profile exists in system preferences — i.e. the user has
+    /// approved "JVPN would like to add VPN configurations" at least once.
+    /// The schedule waits for this so a fresh install never auto-prompts.
+    var isConfigurationInstalled: Bool {
+        (manager?.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier != nil
+    }
 
     private static var runtimePlatformTag: String {
 #if os(macOS)
@@ -131,8 +148,7 @@ final class VPNManager: ObservableObject {
         defer { isInstallingConfiguration = false }
 
         let m = manager ?? NETunnelProviderManager()
-        let mode = JVPNExperimentalSettings.shared.connectionMode
-        let transport = mode.tunnelTransport
+        let transport = JVPNServiceConfig.transport
         let providerConfiguration: [String: NSObject] = [
             "host": JVPNServiceConfig.serverHost as NSString,
             "port": NSNumber(value: JVPNServiceConfig.serverPort),
@@ -243,12 +259,22 @@ final class VPNManager: ObservableObject {
         manager = try await reloadCurrentManagerFromPreferences()
     }
 
-    func connect() async throws {
+    func connect(userInitiated: Bool = true) async throws {
         lastError = nil
         didReportCurrentFailure = false
+        cancelRequested = false
+        suppressNextDisconnectNotice = false
         disableOnDemandWhenIdle = false
         enableOnDemandAfterConnect = true
-        JVPNDebugLog.app("connect() begin")
+        if userInitiated {
+            // A hand-started tunnel outranks the schedule's off window until the
+            // next scheduled turn-off.
+            JVPNAppGroupTelemetry.setScheduleManualOverride(
+                until: JVPNAppGroupTelemetry.schedulePolicy().nextOffDate ?? Date().addingTimeInterval(24 * 3600)
+            )
+        }
+        JVPNAppGroupTelemetry.setScheduleSuspension(until: nil)
+        JVPNDebugLog.app("connect() begin userInitiated=\(userInitiated)")
         try await installConfigurationIfNeeded()
         guard let m = manager else {
             enableOnDemandAfterConnect = false
@@ -270,6 +296,7 @@ final class VPNManager: ObservableObject {
             return
         case .connecting, .reasserting:
             JVPNDebugLog.app("connect() already in progress status=\(Self.neStatusLabel(m.connection.status))")
+            armConnectingWatchdog()
             return
         case .disconnecting:
             JVPNDebugLog.app("connect() waiting for disconnect to finish before restart")
@@ -279,16 +306,73 @@ final class VPNManager: ObservableObject {
             break
         }
         try m.connection.startVPNTunnel()
+        armConnectingWatchdog()
         JVPNDebugLog.app("connect() startVPNTunnel() returned; status=\(Self.neStatusLabel(m.connection.status))")
     }
 
-    func disconnect() {
+    /// Stops the tunnel from any state, including mid-connect: `stopVPNTunnel()`
+    /// is safe while `connecting`, and on-demand is torn down once idle so the
+    /// profile does not immediately restart itself.
+    func disconnect(userInitiated: Bool = true) {
         lastError = nil
         enableOnDemandAfterConnect = false
         didReportCurrentFailure = false
         disableOnDemandWhenIdle = true
-        JVPNDebugLog.app("disconnect() begin; stop tunnel then disable on-demand when idle")
+        cancelRequested = status == .connecting || status == .reasserting
+        suppressNextDisconnectNotice = false
+        cancelConnectingWatchdog()
+        if userInitiated {
+            JVPNAppGroupTelemetry.setScheduleManualOverride(until: nil)
+            JVPNAppGroupTelemetry.setScheduleSuspension(until: nil)
+        }
+        JVPNDebugLog.app("disconnect() begin from status=\(Self.neStatusLabel(status)); stop tunnel then disable on-demand when idle")
         manager?.connection.stopVPNTunnel()
+    }
+
+    /// Disconnect driven by the admin schedule.
+    ///
+    /// Unlike a manual stop this leaves the on-demand rule armed: the packet
+    /// tunnel refuses to start inside the off window, and the very same rule
+    /// brings the VPN back at the on-time without the app having to be running.
+    func disconnectForSchedule(resumeAt: Date?) {
+        JVPNAppGroupTelemetry.setScheduleManualOverride(until: nil)
+        JVPNAppGroupTelemetry.setScheduleSuspension(until: resumeAt)
+        lastError = nil
+        enableOnDemandAfterConnect = false
+        didReportCurrentFailure = false
+        cancelRequested = status == .connecting || status == .reasserting
+        disableOnDemandWhenIdle = false
+        suppressNextDisconnectNotice = true
+        cancelConnectingWatchdog()
+        JVPNDebugLog.app("disconnectForSchedule(); on-demand stays armed, tunnel gated until \(resumeAt.map(String.init(describing:)) ?? "next on-time")")
+        manager?.connection.stopVPNTunnel()
+    }
+
+    // MARK: - Connecting watchdog
+
+    private func armConnectingWatchdog() {
+        cancelConnectingWatchdog()
+        connectingWatchdog = Task { [weak self] in
+            try? await Task.sleep(for: Self.connectingTimeout)
+            guard !Task.isCancelled else { return }
+            self?.handleConnectingTimeout()
+        }
+    }
+
+    private func cancelConnectingWatchdog() {
+        connectingWatchdog?.cancel()
+        connectingWatchdog = nil
+    }
+
+    private func handleConnectingTimeout() {
+        guard status == .connecting else { return }
+        JVPNDebugLog.app("connect() watchdog: still connecting after timeout, stopping tunnel")
+        didReportCurrentFailure = true
+        enableOnDemandAfterConnect = false
+        cancelRequested = false
+        disableOnDemandWhenIdle = true
+        manager?.connection.stopVPNTunnel()
+        lastError = "Couldn't reach \(JVPNServiceConfig.serverHost). Tap Connect to try again."
     }
 
     private func bindStatus() {
@@ -323,9 +407,15 @@ final class VPNManager: ObservableObject {
     }
 
     private func handleStatusTransition(previous: NEVPNStatus, current: NEVPNStatus) {
+        if current == .connecting, previous != .connecting {
+            // Covers tunnels started by the on-demand rule, not just by connect().
+            armConnectingWatchdog()
+        }
         switch current {
         case .connected, .reasserting:
             didReportCurrentFailure = false
+            cancelRequested = false
+            cancelConnectingWatchdog()
             VPNNotificationManager.notifyStatus(current)
             if current == .connected, enableOnDemandAfterConnect, !isSavingPreferences {
                 enableOnDemandAfterConnect = false
@@ -340,7 +430,11 @@ final class VPNManager: ObservableObject {
             }
         case .disconnected, .invalid:
             if previous == .connected || previous == .reasserting || previous == .disconnecting {
-                VPNNotificationManager.notifyStatus(.disconnected)
+                if suppressNextDisconnectNotice {
+                    suppressNextDisconnectNotice = false
+                } else {
+                    VPNNotificationManager.notifyStatus(.disconnected)
+                }
             }
             if disableOnDemandWhenIdle {
                 disableOnDemandWhenIdle = false
@@ -359,15 +453,22 @@ final class VPNManager: ObservableObject {
 
         let failedStart =
             previous == .connecting && (current == .disconnecting || current == .disconnected)
-        guard failedStart, !didReportCurrentFailure else { return }
+        guard failedStart else { return }
+        cancelConnectingWatchdog()
+        // A connect the user cancelled is not a failure — say nothing.
+        if cancelRequested {
+            cancelRequested = false
+            JVPNDebugLog.app("connect cancelled by request")
+            return
+        }
+        guard !didReportCurrentFailure else { return }
         didReportCurrentFailure = true
         enableOnDemandAfterConnect = false
         // Stop first; only touch preferences once we are idle to avoid restart loops.
         disableOnDemandWhenIdle = true
         manager?.connection.stopVPNTunnel()
 
-        let transport = JVPNExperimentalSettings.shared.connectionMode.title
-        let msg = "VPN failed to start (\(transport)). The Mac tunnel plugin was rejected — rebuild from Xcode and try Connect again."
+        let msg = "Couldn't reach \(JVPNServiceConfig.serverHost) over \(JVPNExperimentalSettings.shared.transportTitle). Tap Connect to try again."
         lastError = msg
         JVPNDebugLog.app(msg)
     }

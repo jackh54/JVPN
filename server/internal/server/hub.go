@@ -20,6 +20,7 @@ type Hub struct {
 	recentClosed   []SessionSnapshot
 	deviceRegistry *DeviceRegistry
 	sessionStore   *SessionStore
+	scheduleStore  *ScheduleStore
 	startedAt      time.Time
 	tunReady       atomic.Bool
 	nextSessionID  atomic.Uint64
@@ -119,6 +120,35 @@ func (h *Hub) SessionStore() *SessionStore {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.sessionStore
+}
+
+func (h *Hub) SetScheduleStore(s *ScheduleStore) {
+	h.mu.Lock()
+	h.scheduleStore = s
+	h.mu.Unlock()
+	if s != nil {
+		s.SetChangeHandler(h.BroadcastPolicy)
+	}
+}
+
+func (h *Hub) ScheduleStore() *ScheduleStore {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.scheduleStore
+}
+
+// BroadcastPolicy pushes an updated schedule to every connected client so a
+// dashboard change takes effect without waiting for a reconnect.
+func (h *Hub) BroadcastPolicy(policy SchedulePolicy) {
+	h.mu.RLock()
+	targets := make([]*Session, 0, len(h.sessions))
+	for _, s := range h.sessions {
+		targets = append(targets, s)
+	}
+	h.mu.RUnlock()
+	for _, s := range targets {
+		s.SendPolicy(policy)
+	}
 }
 
 func (h *Hub) SetDeviceRegistry(r *DeviceRegistry) {
@@ -244,14 +274,12 @@ func (h *Hub) DispatchToClient(packet []byte) {
 		return
 	}
 	pkt := append([]byte(nil), packet...)
-	select {
-	case s.downstream <- pkt:
+	// Drops here are intentional: a slow client must not stall the TUN reader.
+	if s.enqueueDownstream(pkt) {
 		n := uint64(len(pkt))
 		s.downstreamBytes.Add(n)
 		s.downstreamPkts.Add(1)
 		h.AddDownstream(n)
-	default:
-		// drop if client is slow
 	}
 }
 

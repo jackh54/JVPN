@@ -31,8 +31,9 @@ const (
 // Payload is not an IPv4 packet: magic 0xC0 + type (+ optional body).
 const (
 	CtrlMagic     = byte(0xC0)
-	CtrlTelemetry = byte(0x01) // + UTF-8 JSON
+	CtrlTelemetry = byte(0x01) // + UTF-8 JSON (client -> server)
 	CtrlHeartbeat = byte(0x02) // no body
+	CtrlPolicy    = byte(0x03) // + UTF-8 JSON (server -> client schedule policy)
 )
 
 // Telemetry is the JSON body for CtrlTelemetry (keys match the iOS client).
@@ -62,7 +63,7 @@ func ParseControlFrame(payload []byte) (typ byte, body []byte, ok bool) {
 	switch typ {
 	case CtrlHeartbeat:
 		return typ, nil, true
-	case CtrlTelemetry:
+	case CtrlTelemetry, CtrlPolicy:
 		return typ, payload[2:], true
 	default:
 		return typ, nil, false
@@ -166,6 +167,18 @@ func rawBool(b json.RawMessage) (bool, bool, error) {
 	default:
 		return false, false, fmt.Errorf("invalid bool %q", s)
 	}
+}
+
+// BuildPolicyFrame wraps a schedule-policy JSON document in a CtrlPolicy payload.
+// The result is a frame payload (not length-prefixed); pass it to WriteFrame.
+func BuildPolicyFrame(jsonBody []byte) ([]byte, error) {
+	if len(jsonBody)+2 > MaxFrameLen {
+		return nil, fmt.Errorf("policy too large: %d", len(jsonBody))
+	}
+	out := make([]byte, 0, len(jsonBody)+2)
+	out = append(out, CtrlMagic, CtrlPolicy)
+	out = append(out, jsonBody...)
+	return out, nil
 }
 
 var ErrBadHandshake = errors.New("invalid handshake")
@@ -307,6 +320,7 @@ func ReadServerHandshake(r io.Reader) (clientIP net.IP, prefixLen byte, err erro
 //   - 0xC0 0x01 + UTF-8 JSON telemetry (client_id, device_name, model, os,
 //     battery_pct, charging, lat, lon, updated_at)
 //   - 0xC0 0x02 heartbeat (empty body after type)
+//   - 0xC0 0x03 + UTF-8 JSON schedule policy (server -> client)
 func WriteFrame(w io.Writer, payload []byte) error {
 	if len(payload) > MaxFrameLen {
 		return fmt.Errorf("frame too large: %d", len(payload))

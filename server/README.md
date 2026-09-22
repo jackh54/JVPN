@@ -6,7 +6,9 @@ Linux VPN head-end for the JVPN iOS client. It accepts **TLS 1.3** on TCP **443*
 
 For DPI-heavy networks, it also supports **WebSocket over TLS** transport (`-transport ws`) while keeping the same authenticated JVPN framing inside the tunnel.
 
-When `-transport ws`, the same TLS :443 listener also accepts an experimental **UDP-over-TCP** tunnel on `POST /dns-query` (`-uot-path`). After a `200` response, datagrams are `uint16` length-prefixed records (DNS-over-HTTPS camouflage). Existing WebSocket clients are unchanged.
+When `-transport ws`, the same TLS :443 listener also accepts a **UDP-over-TCP** tunnel on `POST /dns-query` (`-uot-path`). After a `200` response, datagrams are `uint16` length-prefixed records (DNS-over-HTTPS camouflage).
+
+**This is the transport the JVPN app uses.** The client no longer attempts a WebSocket upgrade, so run the server with `-transport ws` for the UoT path to be served. The `/ws` endpoint stays available for any other client.
 
 ## Requirements
 
@@ -172,9 +174,10 @@ sudo nft add rule inet filter input tcp dport 443 accept
 2. Server replies with 1 byte status (`0` = OK). On OK, 4-byte assigned client IPv4 + 1-byte prefix length (e.g. `24`); v3 also returns a resume token.
 3. Both sides exchange frames as **uint32 length (BE) + payload** (max 65535 bytes):
    - **IPv4 packet** (normal traffic)
-   - **Control** (not IPv4): `0xC0 0x01` + UTF-8 JSON telemetry, or `0xC0 0x02` heartbeat (no body)
+   - **Control** (not IPv4): `0xC0 0x01` + UTF-8 JSON telemetry (client → server), `0xC0 0x02` heartbeat (no body), or `0xC0 0x03` + UTF-8 JSON schedule policy (server → client)
 4. Telemetry JSON keys: `client_id`, `device_name`, `model`, `os`, `battery_pct`, `charging`, `lat`, `lon`, `updated_at`
-5. Sessions idle out after 5 minutes without any framed traffic (IP, telemetry, or heartbeat).
+5. Schedule policy JSON keys: `revision`, `timezone`, `auto_connect`, `on_time`, `auto_disconnect`, `off_time`, `days`, `notify_on`, `notify_off`. Sent once at session start and re-broadcast whenever an admin saves a change.
+6. Sessions idle out after 5 minutes without any framed traffic (IP, telemetry, or heartbeat).
 
 ## Security notes
 
@@ -183,7 +186,7 @@ sudo nft add rule inet filter input tcp dport 443 accept
 
 ## Admin dashboard (localhost + auth)
 
-Optional built-in dashboard with live SSE updates, device telemetry (battery/GPS), traffic, DNS history, and disconnect/block controls:
+Optional built-in dashboard with live SSE updates, device telemetry (battery/GPS), traffic, DNS history, the VPN on/off schedule, and disconnect/block controls:
 
 ```bash
 sudo ./jvpn-server \
@@ -205,6 +208,12 @@ Then open `http://127.0.0.1:18080` locally and sign in with basic auth.
 - `GET /api/stream` — SSE `event: metrics` snapshots (Basic Auth)
 - `GET /api/metrics` — same snapshot as JSON
 - `POST /api/disconnect?session_id=&block_minutes=` — disconnect (`0`) or temporary block
+- `GET /api/schedule` — current schedule policy plus resolved `next_on_at` / `next_off_at`
+- `POST /api/schedule` — partial update (any of `timezone`, `auto_connect`, `on_time`, `auto_disconnect`, `off_time`, `days`, `notify_on`, `notify_off`); validated, persisted to `<data-dir>/schedule.json`, and pushed to every connected client
+
+### VPN schedule
+
+Defaults: on at **07:30 America/Chicago** every day, **never** automatically off. Auto-disconnect is opt-in — leave it off and the tunnel stays up until someone turns it off by hand. `days` is `0` = Sunday … `6` = Saturday; `null` or all seven means every day.
 
 ## Docker deploy
 

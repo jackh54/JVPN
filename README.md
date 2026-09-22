@@ -55,6 +55,28 @@ See `server/README.md` for TUN/NAT, TLS, admin dashboard, and telemetry framing.
 
 Admin (loopback + Basic Auth): `-admin-listen 127.0.0.1:18080`. Unauthenticated `GET /healthz` returns `{"ok":true}` when the TUN is ready. Live UI uses SSE at `/api/stream`.
 
+## Client transport
+
+The client speaks **UDP-over-TCP on 443 only** (`POST /dns-query`, DNS-over-HTTPS camouflage). WebSocket transport was removed from the app because those upgrades no longer get through on the networks JVPN has to cross — run the server with `-transport ws`, which serves the UoT path on the same TLS listener.
+
+## VPN schedule
+
+The **VPN schedule** panel in the admin dashboard controls when every client turns the VPN on and off:
+
+- **Turn on automatically** (default on, 07:30 `America/Chicago`) — clients connect at that time and stay always-on via the on-demand rule.
+- **Turn off automatically** (default **off**) — until an admin enables it, nothing ever tears the tunnel down on a timer.
+- Active days, time zone, and per-transition notification toggles.
+
+The policy is stored in `<data-dir>/schedule.json`, served at `GET/POST /api/schedule`, and pushed to connected clients as control frame `0xC0 0x03` (JSON). Clients cache it in the App Group, so it still applies while the tunnel is down.
+
+Enforcement on the device, in order of reliability:
+
+1. **On-demand rules** keep the tunnel up once connected — "always on" needs no timer.
+2. **The packet tunnel** arms its own wall-clock off-timer and refuses to start inside an off window. This is what makes auto-off work while the app is not running; on-demand stays armed through the off window and brings the VPN back at the on-time.
+3. **The app** reconciles whenever it is awake, and registers the repeating local notification for the daily turn-on.
+
+A manual **Connect** overrides the off window until the next scheduled turn-off; a manual **Disconnect** disables on-demand and sticks until the next on-time.
+
 ## Docker CI/CD setup
 
 Primary deploy path is **GHCR image + `docker compose pull/up`** on the VPS (needs `/dev/net/tun` + `NET_ADMIN`).

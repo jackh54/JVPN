@@ -14,6 +14,8 @@ enum JVPNControlProtocol {
     static let magic: UInt8 = 0xC0
     static let typeTelemetry: UInt8 = 0x01
     static let typeHeartbeat: UInt8 = 0x02
+    /// Server -> client schedule policy (UTF-8 JSON body).
+    static let typePolicy: UInt8 = 0x03
 
     static let heartbeatInterval: TimeInterval = 15
     static let telemetryPollInterval: TimeInterval = 30
@@ -21,6 +23,16 @@ enum JVPNControlProtocol {
     static func isControlPayload(_ payload: Data) -> Bool {
         guard let first = payload.first else { return false }
         return first == magic
+    }
+
+    /// Splits a control payload into its type and body. Returns nil for data frames.
+    static func controlMessage(_ payload: Data) -> (type: UInt8, body: Data)? {
+        guard payload.count >= 2, payload[payload.startIndex] == magic else { return nil }
+        let type = payload[payload.index(payload.startIndex, offsetBy: 1)]
+        let body = payload.count > 2
+            ? payload.subdata(in: payload.index(payload.startIndex, offsetBy: 2)..<payload.endIndex)
+            : Data()
+        return (type, body)
     }
 
     static func heartbeatFrame() -> Data {

@@ -121,6 +121,36 @@ func Start(listenAddr, username, password string, hub *server.Hub, pool *session
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	}))
+	mux.HandleFunc("/api/schedule", withBasicAuth(username, password, func(w http.ResponseWriter, r *http.Request) {
+		sched := hub.ScheduleStore()
+		if sched == nil {
+			http.Error(w, "schedule unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(sched.Get().View(time.Now().UTC()))
+		case http.MethodPost:
+			var body server.ScheduleUpdate
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			policy, err := sched.Apply(body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":       true,
+				"schedule": policy.View(time.Now().UTC()),
+			})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
 	mux.HandleFunc("/api/sessions/reset", withBasicAuth(username, password, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -375,6 +405,32 @@ const indexHTML = `<!doctype html>
     .status-pill.pending { background:rgba(245,197,66,0.10); color:var(--warn); border:1px solid rgba(245,197,66,0.22); }
     .device-title { font-weight:600; color:var(--text); }
     .device-sub { display:block; font-size:11px; color:var(--muted); margin-top:2px; }
+    .sched-grid {
+      display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:14px;
+    }
+    .sched-card {
+      padding:16px; border-radius:12px; border:1px solid var(--line);
+      background: rgba(255,255,255,0.02); display:flex; flex-direction:column; gap:14px;
+    }
+    .switch-row {
+      display:flex; align-items:flex-start; justify-content:space-between; gap:12px; cursor:pointer;
+    }
+    .switch-row > span:first-child { display:block; font-size:13px; }
+    .switch-row input[type="checkbox"] { flex:0 0 auto; margin-top:2px; }
+    input[type="checkbox"] { width:16px; height:16px; accent-color: var(--accent); cursor:pointer; }
+    .field { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:13px; color:var(--muted); }
+    .field input, .field select {
+      padding:8px 10px; border-radius:8px; border:1px solid var(--line2);
+      background: rgba(255,255,255,0.03); color: var(--text); font:inherit; min-width:150px;
+    }
+    .field input:disabled, .field select:disabled { opacity:0.45; }
+    .days { display:flex; flex-wrap:wrap; gap:6px; }
+    .days label {
+      display:inline-flex; align-items:center; gap:5px; cursor:pointer;
+      padding:5px 9px; border-radius:8px; border:1px solid var(--line);
+      background: rgba(255,255,255,0.03); font-size:11.5px;
+    }
+    .days label.on { border-color: rgba(61,222,154,0.35); background: var(--accent-dim); color:#a8f5d0; }
     .flash { animation: flash 0.45s ease; }
     @keyframes pulse {
       0% { box-shadow: 0 0 0 0 rgba(61,222,154,0.45); }
@@ -392,6 +448,7 @@ const indexHTML = `<!doctype html>
     @media (max-width: 1100px) {
       .metrics { grid-template-columns: repeat(3, minmax(0,1fr)); }
       .stage, .split { grid-template-columns: 1fr; }
+      .sched-grid { grid-template-columns: 1fr; }
       #map { height: 300px; }
     }
     @media (max-width: 640px) {
@@ -498,6 +555,55 @@ const indexHTML = `<!doctype html>
             <thead><tr><th>User</th><th>Status</th><th>Session</th><th>Phone name</th><th>Model</th><th>Client ID</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-bottom:20px;">
+      <div class="panel-hd">
+        <div>
+          <h2>VPN schedule</h2>
+          <div class="sub">Turn every client's VPN on and off at set times, and notify the user when it happens</div>
+        </div>
+        <div class="sub" id="schedNext">—</div>
+      </div>
+      <div class="panel-bd">
+        <div class="sched-grid">
+          <div class="sched-card">
+            <label class="switch-row">
+              <span><strong>Turn on automatically</strong><span class="device-sub">Clients connect at this time and stay always-on</span></span>
+              <input type="checkbox" id="schedAutoConnect" onchange="syncScheduleInputs()" />
+            </label>
+            <div class="field"><span>On at</span><input type="time" id="schedOnTime" step="60" /></div>
+            <label class="switch-row">
+              <span>Notify the device when it turns on</span>
+              <input type="checkbox" id="schedNotifyOn" />
+            </label>
+          </div>
+          <div class="sched-card">
+            <label class="switch-row">
+              <span><strong>Turn off automatically</strong><span class="device-sub">Off unless you enable it — otherwise the VPN never drops on a timer</span></span>
+              <input type="checkbox" id="schedAutoDisconnect" onchange="syncScheduleInputs()" />
+            </label>
+            <div class="field"><span>Off at</span><input type="time" id="schedOffTime" step="60" /></div>
+            <label class="switch-row">
+              <span>Notify the device when it turns off</span>
+              <input type="checkbox" id="schedNotifyOff" />
+            </label>
+          </div>
+          <div class="sched-card">
+            <div class="field"><span>Time zone</span><select id="schedTimezone"></select></div>
+            <div>
+              <div class="device-sub" style="margin-bottom:8px;">Active days</div>
+              <div class="days" id="schedDays"></div>
+            </div>
+            <div class="device-sub">All seven days selected runs the schedule daily.</div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" onclick="saveSchedule()">Save schedule</button>
+          <button onclick="loadSchedule()">Revert</button>
+          <span class="muted" id="schedMsg"></span>
         </div>
       </div>
     </section>
@@ -840,6 +946,140 @@ function applySnap(d){
   renderDetails();
   updateMap(d.active||[]);
 }
+const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const TZ_CHOICES = [
+  "America/Chicago","America/New_York","America/Denver","America/Phoenix",
+  "America/Los_Angeles","America/Anchorage","Pacific/Honolulu","UTC",
+  "Europe/London","Europe/Berlin","Asia/Tokyo","Australia/Sydney"
+];
+let scheduleLoaded = null;
+
+function buildScheduleControls(){
+  const tz = document.getElementById("schedTimezone");
+  if(!tz.options.length){
+    TZ_CHOICES.forEach(function(z){
+      const opt = document.createElement("option");
+      opt.value = z; opt.textContent = z;
+      tz.appendChild(opt);
+    });
+  }
+  const days = document.getElementById("schedDays");
+  if(!days.childElementCount){
+    DAY_NAMES.forEach(function(name, i){
+      const label = document.createElement("label");
+      label.id = "schedDayLabel" + i;
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.id = "schedDay" + i;
+      box.addEventListener("change", syncScheduleInputs);
+      label.appendChild(box);
+      label.appendChild(document.createTextNode(name));
+      days.appendChild(label);
+    });
+  }
+}
+function syncScheduleInputs(){
+  document.getElementById("schedOnTime").disabled = !document.getElementById("schedAutoConnect").checked;
+  document.getElementById("schedNotifyOn").disabled = !document.getElementById("schedAutoConnect").checked;
+  document.getElementById("schedOffTime").disabled = !document.getElementById("schedAutoDisconnect").checked;
+  document.getElementById("schedNotifyOff").disabled = !document.getElementById("schedAutoDisconnect").checked;
+  for(let i=0;i<7;i++){
+    document.getElementById("schedDayLabel" + i)
+      .classList.toggle("on", document.getElementById("schedDay" + i).checked);
+  }
+}
+function fmtWhen(iso, tz){
+  if(!iso) return null;
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return null;
+  try {
+    return d.toLocaleString(undefined, {weekday:"short", hour:"numeric", minute:"2-digit", timeZone: tz});
+  } catch(e) {
+    return d.toLocaleString();
+  }
+}
+function renderScheduleSummary(p){
+  const bits = [];
+  const on = fmtWhen(p.next_on_at, p.timezone);
+  const off = fmtWhen(p.next_off_at, p.timezone);
+  if(p.auto_connect) bits.push("Next on " + (on || p.on_time));
+  else bits.push("Auto-connect off");
+  if(p.auto_disconnect) bits.push("next off " + (off || p.off_time));
+  else bits.push("never auto-off");
+  document.getElementById("schedNext").textContent = bits.join(" · ") + " (" + p.timezone + ")";
+}
+function applySchedule(p){
+  buildScheduleControls();
+  scheduleLoaded = p;
+  document.getElementById("schedAutoConnect").checked = !!p.auto_connect;
+  document.getElementById("schedAutoDisconnect").checked = !!p.auto_disconnect;
+  document.getElementById("schedOnTime").value = p.on_time || "07:30";
+  document.getElementById("schedOffTime").value = p.off_time || "15:00";
+  document.getElementById("schedNotifyOn").checked = !!p.notify_on;
+  document.getElementById("schedNotifyOff").checked = !!p.notify_off;
+  const tz = document.getElementById("schedTimezone");
+  if(p.timezone && !Array.prototype.some.call(tz.options, function(o){ return o.value === p.timezone; })){
+    const opt = document.createElement("option");
+    opt.value = p.timezone; opt.textContent = p.timezone;
+    tz.insertBefore(opt, tz.firstChild);
+  }
+  tz.value = p.timezone || "America/Chicago";
+  const days = Array.isArray(p.days) && p.days.length ? p.days : [0,1,2,3,4,5,6];
+  for(let i=0;i<7;i++){
+    document.getElementById("schedDay" + i).checked = days.indexOf(i) !== -1;
+  }
+  syncScheduleInputs();
+  renderScheduleSummary(p);
+}
+async function loadSchedule(){
+  try {
+    const res = await fetch("/api/schedule", { credentials:"same-origin", cache:"no-store" });
+    if(!res.ok) throw new Error("schedule " + res.status);
+    applySchedule(await res.json());
+    document.getElementById("schedMsg").textContent = "";
+  } catch(e) {
+    document.getElementById("schedMsg").textContent = "Could not load the schedule.";
+  }
+}
+async function saveSchedule(){
+  const days = [];
+  for(let i=0;i<7;i++){
+    if(document.getElementById("schedDay" + i).checked) days.push(i);
+  }
+  if(!days.length){
+    document.getElementById("schedMsg").textContent = "Pick at least one day.";
+    return;
+  }
+  const body = {
+    auto_connect: document.getElementById("schedAutoConnect").checked,
+    on_time: document.getElementById("schedOnTime").value || "07:30",
+    auto_disconnect: document.getElementById("schedAutoDisconnect").checked,
+    off_time: document.getElementById("schedOffTime").value || "15:00",
+    timezone: document.getElementById("schedTimezone").value,
+    notify_on: document.getElementById("schedNotifyOn").checked,
+    notify_off: document.getElementById("schedNotifyOff").checked,
+    days: days
+  };
+  const msg = document.getElementById("schedMsg");
+  msg.textContent = "Saving…";
+  try {
+    const res = await fetch("/api/schedule", {
+      method:"POST",
+      credentials:"same-origin",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+    if(!res.ok){
+      msg.textContent = (await res.text()).trim() || "Save failed.";
+      return;
+    }
+    const out = await res.json();
+    applySchedule(out.schedule);
+    msg.textContent = "Saved — pushed to connected devices.";
+  } catch(e) {
+    msg.textContent = "Save failed.";
+  }
+}
 function setLive(ok, msg){
   document.getElementById("liveDot").className = "dot" + (ok ? "" : " off");
   document.getElementById("liveLabel").textContent = msg;
@@ -864,6 +1104,9 @@ function startLiveUpdates(){
   pollMetrics();
 }
 startLiveUpdates();
+buildScheduleControls();
+loadSchedule();
+setInterval(function(){ if(scheduleLoaded) renderScheduleSummary(scheduleLoaded); }, 30000);
 try { initMap(); } catch(e) { console.warn("map init failed", e); }
 </script>
 </body>

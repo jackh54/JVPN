@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/subtle"
 	"encoding/binary"
+	"encoding/json"
 	"io"
 	"log"
 	"net"
@@ -32,6 +33,8 @@ type Session struct {
 	deviceMu        sync.RWMutex
 	telemetryAt     time.Time
 	downstream      chan []byte
+	downMu          sync.RWMutex
+	downClosed      bool
 	connMu          sync.Mutex
 	conn            net.Conn
 	upstreamBytes   atomic.Uint64
@@ -149,6 +152,9 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 	}
 	hub.Register(clientIP, s)
 	s.syncDeviceRegistry()
+	if sched := hub.ScheduleStore(); sched != nil {
+		s.SendPolicy(sched.Get())
+	}
 	defer func() {
 		if store != nil && clientID != "" {
 			store.Touch(clientID, s.deviceInfoSnapshot())
@@ -167,13 +173,54 @@ func ServeConn(c net.Conn, hub *Hub, pool *ipool.IPPool, token []byte, tun io.Wr
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer close(s.downstream)
+		defer s.closeDownstream()
 		s.tlsToTUN(c, tun)
 		_ = c.Close()
 	}()
 	s.tunToTLS(c)
 	wg.Wait()
 	log.Printf("client disconnected: session=%d remote=%s assigned=%s", s.id, s.remoteAddr, s.clientIP.String())
+}
+
+// closeDownstream shuts the queue exactly once so late writers (TUN dispatch,
+// policy pushes) cannot send on a closed channel.
+func (s *Session) closeDownstream() {
+	s.downMu.Lock()
+	defer s.downMu.Unlock()
+	if s.downClosed {
+		return
+	}
+	s.downClosed = true
+	close(s.downstream)
+}
+
+// enqueueDownstream queues one frame payload for the client, dropping it if the
+// queue is full or the session is shutting down.
+func (s *Session) enqueueDownstream(payload []byte) bool {
+	s.downMu.RLock()
+	defer s.downMu.RUnlock()
+	if s.downClosed {
+		return false
+	}
+	select {
+	case s.downstream <- payload:
+		return true
+	default:
+		return false
+	}
+}
+
+// SendPolicy pushes the current schedule policy to this client.
+func (s *Session) SendPolicy(policy SchedulePolicy) {
+	body, err := json.Marshal(policy)
+	if err != nil {
+		return
+	}
+	payload, err := protocol.BuildPolicyFrame(body)
+	if err != nil {
+		return
+	}
+	s.enqueueDownstream(payload)
 }
 
 func (s *Session) setConn(c net.Conn) {

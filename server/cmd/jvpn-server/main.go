@@ -148,6 +148,17 @@ func main() {
 		hub.SetSessionStore(store)
 		log.Printf("loaded %d persisted client sessions", len(store.KnownSessions()))
 	}
+	if sched, err := server.NewScheduleStore(filepath.Join(*dataDir, "schedule.json")); err != nil {
+		log.Fatalf("schedule store: %v", err)
+	} else {
+		hub.SetScheduleStore(sched)
+		p := sched.Get()
+		offLabel := "off"
+		if p.AutoDisconnect {
+			offLabel = p.OffTime
+		}
+		log.Printf("vpn schedule: on=%s (auto-connect %v) off=%s tz=%s", p.OnTime, p.AutoConnect, offLabel, p.Timezone)
+	}
 	pool := session.NewIPPool()
 	tunOut := server.NewSerializedTUN(ifce, 8192)
 	go hub.RunTUNReader(ifce)

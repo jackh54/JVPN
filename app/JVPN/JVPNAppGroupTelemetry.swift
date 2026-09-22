@@ -23,6 +23,10 @@ enum JVPNAppGroupTelemetry {
         static let updatedAt = "telemetry.updated_at"
         static let revision = "telemetry.revision"
         static let notificationsEnabled = "user.notifications_enabled"
+        static let schedulePolicy = "schedule.policy_json"
+        static let scheduleRevision = "schedule.revision"
+        static let scheduleSuspendedUntil = "schedule.suspended_until"
+        static let scheduleManualOverrideUntil = "schedule.manual_override_until"
     }
 
     static func notificationsEnabled(default defaultValue: Bool = true) -> Bool {
@@ -117,5 +121,86 @@ enum JVPNAppGroupTelemetry {
 
     static func currentRevision() -> Int {
         defaults?.integer(forKey: Key.revision) ?? 0
+    }
+
+    // MARK: - Schedule policy
+
+    /// Caches the policy the server pushed over the tunnel. Returns true when the
+    /// stored document actually changed.
+    @discardableResult
+    static func storeSchedulePolicy(_ json: Data) -> Bool {
+        guard let d = defaults,
+              let text = String(data: json, encoding: .utf8),
+              let policy = decodeSchedulePolicy(json)
+        else { return false }
+        let previous = d.string(forKey: Key.schedulePolicy)
+        d.set(text, forKey: Key.schedulePolicy)
+        d.set(policy.revision, forKey: Key.scheduleRevision)
+        UserDefaults.standard.set(text, forKey: Key.schedulePolicy)
+        return previous != text
+    }
+
+    static func decodeSchedulePolicy(_ json: Data) -> JVPNSchedulePolicy? {
+        try? JSONDecoder().decode(JVPNSchedulePolicy.self, from: json)
+    }
+
+    /// The last policy pushed by the server, or the built-in default.
+    static func schedulePolicy() -> JVPNSchedulePolicy {
+        let text = defaults?.string(forKey: Key.schedulePolicy)
+            ?? UserDefaults.standard.string(forKey: Key.schedulePolicy)
+        guard let text, let data = text.data(using: .utf8),
+              let policy = decodeSchedulePolicy(data)
+        else { return .fallback }
+        return policy
+    }
+
+    static func hasStoredSchedulePolicy() -> Bool {
+        let text = defaults?.string(forKey: Key.schedulePolicy)
+            ?? UserDefaults.standard.string(forKey: Key.schedulePolicy)
+        return !(text ?? "").isEmpty
+    }
+
+    /// Set by the tunnel when a scheduled turn-off fires so an on-demand restart
+    /// during the off window does not immediately bring the tunnel back up.
+    static func setScheduleSuspension(until date: Date?) {
+        guard let d = defaults else { return }
+        if let date {
+            d.set(date.timeIntervalSince1970, forKey: Key.scheduleSuspendedUntil)
+            UserDefaults.standard.set(date.timeIntervalSince1970, forKey: Key.scheduleSuspendedUntil)
+        } else {
+            d.removeObject(forKey: Key.scheduleSuspendedUntil)
+            UserDefaults.standard.removeObject(forKey: Key.scheduleSuspendedUntil)
+        }
+    }
+
+    static func scheduleSuspendedUntil() -> Date? {
+        let raw = defaults?.double(forKey: Key.scheduleSuspendedUntil)
+            ?? UserDefaults.standard.double(forKey: Key.scheduleSuspendedUntil)
+        guard raw > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: raw)
+        guard date > Date() else { return nil }
+        return date
+    }
+
+    /// Set when the user connects by hand so the schedule's off window does not
+    /// immediately undo them. Cleared at the next scheduled transition.
+    static func setScheduleManualOverride(until date: Date?) {
+        guard let d = defaults else { return }
+        if let date {
+            d.set(date.timeIntervalSince1970, forKey: Key.scheduleManualOverrideUntil)
+            UserDefaults.standard.set(date.timeIntervalSince1970, forKey: Key.scheduleManualOverrideUntil)
+        } else {
+            d.removeObject(forKey: Key.scheduleManualOverrideUntil)
+            UserDefaults.standard.removeObject(forKey: Key.scheduleManualOverrideUntil)
+        }
+    }
+
+    static func scheduleManualOverrideUntil() -> Date? {
+        let raw = defaults?.double(forKey: Key.scheduleManualOverrideUntil)
+            ?? UserDefaults.standard.double(forKey: Key.scheduleManualOverrideUntil)
+        guard raw > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: raw)
+        guard date > Date() else { return nil }
+        return date
     }
 }

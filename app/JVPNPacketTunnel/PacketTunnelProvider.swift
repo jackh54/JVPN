@@ -46,12 +46,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var reconnectWorkItem: DispatchWorkItem?
     private var heartbeatWorkItem: DispatchWorkItem?
     private var telemetryPollWorkItem: DispatchWorkItem?
+    private var scheduledOffWorkItem: DispatchWorkItem?
+    private var startWatchdogWorkItem: DispatchWorkItem?
     private var reconnectAttempt = 0
     private var stickyTransportFailures = 0
     private let transportFlipAfterFailures = 5
-    private var transportCandidates: [String] = ["ws"]
+    private var transportCandidates: [String] = ["uot"]
     private var transportIndex = 0
-    private var activeTransport = "ws"
+    private var activeTransport = "uot"
     private var currentConnectionID: UInt64 = 0
     private var reconnectScheduled = false
     private var sessionReady = false
@@ -87,12 +89,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
 
+        // An on-demand restart during a scheduled off window must not bring the
+        // tunnel back up; fail fast instead of dialing the server.
+        if let resumeAt = Self.scheduledOffResumeDate() {
+            JVPNDebugLog.tunnel("startTunnel refused: schedule keeps the VPN off until \(resumeAt)")
+            completionHandler(NSError(
+                domain: "JVPN",
+                code: 30,
+                userInfo: [NSLocalizedDescriptionKey: "JVPN is off on schedule until \(Self.shortTime(resumeAt))."]
+            ))
+            return
+        }
+
         let config = BackendConfig(
             host: host,
             port: (cfg[TunnelConfigKey.port] as? NSNumber)?.uint16Value ?? 443,
             token: token,
             acceptInsecureTLS: (cfg[TunnelConfigKey.acceptInsecureTLS] as? NSNumber)?.boolValue ?? false,
-            transportMode: (cfg[TunnelConfigKey.transport] as? String)?.lowercased() ?? "ws",
+            transportMode: (cfg[TunnelConfigKey.transport] as? String)?.lowercased() ?? "uot",
             wsPath: Self.normalizedWSPath((cfg[TunnelConfigKey.wsPath] as? String) ?? "/ws"),
             uotPath: Self.normalizedUoTPath((cfg[TunnelConfigKey.uotPath] as? String) ?? "/dns-query")
         )
@@ -116,10 +130,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         resetSendQueue(cancelPending: true)
         cancelHeartbeatAndTelemetry()
         startPathMonitor()
-        let preferred = Self.loadPreferredTransport(host: config.host, port: config.port)
-        transportCandidates = Self.resolveTransportCandidates(config.transportMode, preferred: preferred)
+        transportCandidates = Self.resolveTransportCandidates(config.transportMode)
         transportIndex = 0
         activeTransport = transportCandidates[transportIndex]
+        armStartWatchdog(host: config.host, completionHandler: completionHandler)
+        armScheduledOffTimer()
         connectBackend(config: config, isInitial: true, completionHandler: completionHandler)
     }
 
@@ -351,6 +366,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         ioQueue.async { [weak self] in
             guard let self else { return }
             guard self.startCompleted, !self.isClosing else { return }
+            // The off timer runs on wall time, but a long sleep can still overshoot it.
+            self.armScheduledOffTimer()
             if self.vpnConnection == nil {
                 let err = NSError(domain: "JVPN", code: 15, userInfo: [NSLocalizedDescriptionKey: "Wake"])
                 self.scheduleReconnectIfNeeded(reason: err)
@@ -378,7 +395,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     self.failDuringBringUp(err, completionHandler)
                 case .success(let clientIP, let prefixLen):
                     self.stickyTransportFailures = 0
-                    Self.savePreferredTransport(self.activeTransport, host: cfg.host, port: cfg.port)
                     self.applySettingsAndBridge(conn: conn, connID: connID, clientIP: clientIP, prefixLen: prefixLen, completionHandler: completionHandler)
                 }
             }
@@ -639,7 +655,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     }
                     return
                 }
-                if !JVPNControlProtocol.isControlPayload(payload) {
+                if let control = JVPNControlProtocol.controlMessage(payload) {
+                    self.handleControlMessage(type: control.type, body: control.body)
+                } else {
                     self.packetFlow.writePackets([payload], withProtocols: [NSNumber(value: AF_INET as Int32)])
                 }
                 self.recvLoop(conn: conn, connID: connID)
@@ -952,6 +970,131 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    // MARK: - Schedule
+
+    /// Handles a server -> client control frame. Data frames never reach here.
+    private func handleControlMessage(type: UInt8, body: Data) {
+        guard type == JVPNControlProtocol.typePolicy, !body.isEmpty else { return }
+        let changed = JVPNAppGroupTelemetry.storeSchedulePolicy(body)
+        JVPNDebugLog.tunnel("schedule policy received (\(body.count) bytes, changed=\(changed))")
+        guard changed else { return }
+        ioQueue.async { [weak self] in
+            self?.armScheduledOffTimer()
+        }
+    }
+
+    /// (Re)arms the timer that tears the tunnel down at the scheduled off time.
+    /// Uses a wall-clock deadline so device sleep does not stretch it.
+    private func armScheduledOffTimer() {
+        startLock.lock()
+        scheduledOffWorkItem?.cancel()
+        scheduledOffWorkItem = nil
+        startLock.unlock()
+
+        let policy = JVPNAppGroupTelemetry.schedulePolicy()
+        guard policy.autoDisconnect, let next = policy.nextOffDate else { return }
+        let delay = max(1, next.timeIntervalSinceNow)
+        let work = DispatchWorkItem { [weak self] in
+            self?.applyScheduledOff()
+        }
+        startLock.lock()
+        scheduledOffWorkItem = work
+        startLock.unlock()
+        ioQueue.asyncAfter(wallDeadline: .now() + delay, execute: work)
+        JVPNDebugLog.tunnel("scheduled off armed in \(Int(delay))s")
+    }
+
+    private func applyScheduledOff() {
+        guard !isClosing else { return }
+        let policy = JVPNAppGroupTelemetry.schedulePolicy()
+        guard policy.autoDisconnect, policy.intent(at: Date()) == .disconnect else {
+            // The policy changed under us (or the clock moved); just re-arm.
+            armScheduledOffTimer()
+            return
+        }
+        let resumeAt = policy.nextOnDate
+        JVPNAppGroupTelemetry.setScheduleManualOverride(until: nil)
+        JVPNAppGroupTelemetry.setScheduleSuspension(until: resumeAt)
+        if policy.notifyOff {
+            TunnelNotify.scheduledOff(resumeAt: resumeAt)
+        }
+        JVPNDebugLog.tunnel("scheduled off fired; resuming at \(resumeAt.map(Self.shortTime) ?? "next on-time")")
+        cancelTunnelWithError(nil)
+    }
+
+    /// When the schedule currently wants the VPN off, returns the time it comes
+    /// back on; otherwise nil, and the stale suspension marker is cleared as a
+    /// side effect. A manual connect overrides the window until the next off time.
+    private static func scheduledOffResumeDate() -> Date? {
+        let policy = JVPNAppGroupTelemetry.schedulePolicy()
+        guard policy.autoDisconnect, policy.intent(at: Date()) == .disconnect else {
+            JVPNAppGroupTelemetry.setScheduleSuspension(until: nil)
+            return nil
+        }
+        if JVPNAppGroupTelemetry.scheduleManualOverrideUntil() != nil {
+            return nil
+        }
+        return policy.nextOnDate ?? JVPNAppGroupTelemetry.scheduleSuspendedUntil()
+    }
+
+    private static func shortTime(_ date: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.dateStyle = .none
+        fmt.timeStyle = .short
+        return fmt.string(from: date)
+    }
+
+    // MARK: - Start watchdog
+
+    /// A server that completes TLS but never answers the handshake would otherwise
+    /// leave the tunnel in `connecting` forever, which the user can only clear from
+    /// system VPN settings. Fail the start instead so the app can report and retry.
+    private func armStartWatchdog(host: String, completionHandler: @escaping (Error?) -> Void) {
+        cancelStartWatchdog()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.startLock.lock()
+            let alreadyDone = self.startCompleted
+            self.startLock.unlock()
+            guard !alreadyDone else { return }
+            JVPNDebugLog.tunnel("startTunnel watchdog fired after \(Int(Self.startTimeout))s")
+            self.vpnConnection?.cancel()
+            self.vpnConnection = nil
+            self.finishStart(
+                NSError(
+                    domain: "JVPN",
+                    code: 31,
+                    userInfo: [NSLocalizedDescriptionKey: "Timed out connecting to \(host). Check that the server is reachable and try again."]
+                ),
+                completionHandler
+            )
+        }
+        startLock.lock()
+        startWatchdogWorkItem = work
+        startLock.unlock()
+        ioQueue.asyncAfter(wallDeadline: .now() + Self.startTimeout, execute: work)
+    }
+
+    /// Callers must not hold `startLock`.
+    private func cancelScheduledOffTimer() {
+        startLock.lock()
+        let work = scheduledOffWorkItem
+        scheduledOffWorkItem = nil
+        startLock.unlock()
+        work?.cancel()
+    }
+
+    /// Callers must not hold `startLock`.
+    private func cancelStartWatchdog() {
+        startLock.lock()
+        let work = startWatchdogWorkItem
+        startWatchdogWorkItem = nil
+        startLock.unlock()
+        work?.cancel()
+    }
+
+    private static let startTimeout: TimeInterval = 25
+
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         isClosing = true
         startLock.lock()
@@ -966,6 +1109,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         outboundPackets.removeAll(keepingCapacity: true)
         drainingOutbound = false
         cancelHeartbeatAndTelemetry()
+        cancelStartWatchdog()
+        cancelScheduledOffTimer()
         resetSendQueue(cancelPending: true)
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
@@ -991,6 +1136,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func finishStart(_ error: Error?, _ completionHandler: @escaping (Error?) -> Void) {
+        cancelStartWatchdog()
         startLock.lock()
         defer { startLock.unlock() }
         guard !startCompleted else { return }
@@ -1050,28 +1196,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return out
     }
 
-    private static func resolveTransportCandidates(_ mode: String, preferred: String?) -> [String] {
-        let base: [String]
-        switch mode {
-        case "tcp":
-            base = ["tcp", "ws"]
-        case "uot":
-            base = ["uot"]
-        case "auto":
-            base = ["ws", "tcp"]
-        case "ws":
-            base = ["ws", "tcp"]
-        default:
-            base = ["ws", "tcp"]
-        }
-        guard let preferred, (preferred == "ws" || preferred == "tcp" || preferred == "uot"), base.contains(preferred) else {
-            return base
-        }
-        var out = [preferred]
-        for t in base where t != preferred {
-            out.append(t)
-        }
-        return out
+    /// UDP-over-TCP on 443 is the only transport. Plain TCP stays reachable for a
+    /// profile that still carries `transport = "tcp"`, but nothing falls back to
+    /// WebSocket — those upgrades no longer get through, so there is no longer a
+    /// candidate list to order by past success.
+    private static func resolveTransportCandidates(_ mode: String) -> [String] {
+        mode == "tcp" ? ["tcp"] : ["uot"]
     }
 
     private static func deviceMetadataData() -> Data {
@@ -1103,19 +1233,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private static func saveResumeToken(_ token: String, host: String, port: UInt16) {
         UserDefaults.standard.set(token, forKey: resumeTokenKey(host: host, port: port))
-    }
-
-    private static func preferredTransportKey(host: String, port: UInt16) -> String {
-        "org.jackh54.jvpn.preferred_transport.\(host.lowercased()):\(port)"
-    }
-
-    private static func loadPreferredTransport(host: String, port: UInt16) -> String? {
-        UserDefaults.standard.string(forKey: preferredTransportKey(host: host, port: port))
-    }
-
-    private static func savePreferredTransport(_ transport: String, host: String, port: UInt16) {
-        guard transport == "ws" || transport == "tcp" || transport == "uot" else { return }
-        UserDefaults.standard.set(transport, forKey: preferredTransportKey(host: host, port: port))
     }
 
     private static func describeNWState(_ state: NWConnection.State) -> String {

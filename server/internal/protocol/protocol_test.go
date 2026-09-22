@@ -171,3 +171,31 @@ func TestControlTelemetryStringEncoded(t *testing.T) {
 		t.Fatalf("updated_at: %q", got.UpdatedAt)
 	}
 }
+
+func TestPolicyFrameRoundTrip(t *testing.T) {
+	body := []byte(`{"revision":7,"on_time":"07:30","off_time":"15:00"}`)
+	payload, err := BuildPolicyFrame(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Must not be mistaken for IPv4: the version nibble would read as 0xC.
+	if payload[0]>>4 == 4 {
+		t.Fatal("policy payload must never parse as an IPv4 packet")
+	}
+	if !IsControlFrame(payload) {
+		t.Fatal("policy payload is not recognised as a control frame")
+	}
+	typ, got, ok := ParseControlFrame(payload)
+	if !ok || typ != CtrlPolicy {
+		t.Fatalf("ParseControlFrame = (%#x, %v)", typ, ok)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("body round-trip: %q", got)
+	}
+}
+
+func TestBuildPolicyFrameRejectsOversizedBody(t *testing.T) {
+	if _, err := BuildPolicyFrame(make([]byte, MaxFrameLen)); err == nil {
+		t.Fatal("expected an error for a body that cannot be framed")
+	}
+}

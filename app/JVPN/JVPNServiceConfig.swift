@@ -38,13 +38,15 @@ enum JVPNServiceConfig {
     /// Set **`false`** when the server uses a public CA (e.g. Let’s Encrypt).
     static let acceptSelfSignedTLS = false
 
-    /// `auto` = try websocket first and fail over to tcp, `ws` = websocket only, `tcp` = tcp first with ws fallback.
-    static let transport = "auto"
+    /// The only supported transport. WebSocket upgrades are blocked on the
+    /// networks JVPN has to cross, so every tunnel runs UDP-over-TCP on 443.
+    static let transport = "uot"
 
-    /// Websocket upgrade path used when `transport == "ws"` / auto.
+    /// Retained so existing tunnel profiles keep a stable providerConfiguration
+    /// shape; unused while `transport == "uot"`.
     static let webSocketPath = "/ws"
 
-    /// HTTP path for experimental UDP-over-TCP (DoH-style POST) on TLS 443.
+    /// HTTP path for the UDP-over-TCP (DoH-style POST) tunnel on TLS 443.
     static let uotPath = "/dns-query"
 
     static var isPlaceholderConfiguration: Bool {
